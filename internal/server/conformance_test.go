@@ -611,7 +611,7 @@ func TestHostHeaderValidation(t *testing.T) {
 	}
 
 	// ...unless it was explicitly allowlisted.
-	srv.cfg.AllowedHosts = []string{"gobbonet.example.com"}
+	srv.allowedHosts = []string{"gobbonet.example.com"}
 	req = newReq(http.MethodGet, "/health-fileserver", nil)
 	req.Host = "gobbonet.example.com"
 	rec = httptest.NewRecorder()

@@ -40,6 +40,7 @@ function openSettings() {
     el.checked = (el.value === autoScrollMode());
   });
   loadStandDownPanel();
+  loadNetworkHostsPanel();
   document.getElementById('avatar-scale-val').textContent = Math.round(aScale * 100) + '%';
   // The Add a Model button needs a server to download with; in file:// mode it
   // is hidden with an explanation instead. Runs on open rather than at boot so
@@ -1121,5 +1122,63 @@ function copyLanAddress(btn) {
     navigator.clipboard.writeText(text).then(done).catch(fallback);
   } else {
     fallback();
+  }
+}
+
+/* NETWORK HOSTS PANEL — server-wide, never stored in browser settings. */
+async function loadNetworkHostsPanel() {
+  const input = document.getElementById('set-network-hosts');
+  const save = document.getElementById('network-hosts-save');
+  const status = document.getElementById('network-hosts-status');
+  if (!input || !save || !status) return;
+  input.disabled = save.disabled = true;
+  input.value = '';
+  status.textContent = 'Loading network names…';
+  if (!IS_SERVED) {
+    status.textContent = 'Open GobboNet through its server address to manage network names.';
+    return;
+  }
+  try {
+    const resp = await fetch(window.location.origin + '/network/hosts', { cache: 'no-store' });
+    if (resp.status === 401) {
+      status.textContent = 'Sign in again, then reopen CONFIG to manage network names.';
+      return;
+    }
+    if (!resp.ok) throw new Error('unavailable');
+    const data = await resp.json();
+    if (!Array.isArray(data.allowed_hosts)) throw new Error('unsupported');
+    input.value = data.allowed_hosts.join('\n');
+    input.disabled = save.disabled = false;
+    status.textContent = 'Names saved here work immediately; no restart needed.';
+  } catch (e) {
+    status.textContent = 'Network settings are unavailable. Check the server connection and update GobboNet if this server does not support this panel.';
+  }
+}
+
+async function saveNetworkHosts() {
+  const input = document.getElementById('set-network-hosts');
+  const save = document.getElementById('network-hosts-save');
+  const status = document.getElementById('network-hosts-status');
+  if (!input || !save || !status || input.disabled || save.disabled) return;
+  const names = input.value.split(/[\s,]+/).filter(Boolean);
+  input.disabled = save.disabled = true;
+  status.textContent = 'Saving network names…';
+  try {
+    const resp = await fetch(window.location.origin + '/network/hosts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowed_hosts: names }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      status.textContent = data.error || 'Could not save network names.';
+      return;
+    }
+    if (!Array.isArray(data.allowed_hosts)) throw new Error('invalid response');
+    input.value = data.allowed_hosts.join('\n');
+    status.textContent = 'Saved. You can now open GobboNet using these names. Sign in on the new address if asked.';
+  } catch (e) {
+    status.textContent = 'Could not confirm the save. Check the connection, then reopen CONFIG to see the saved names.';
+  } finally {
+    input.disabled = save.disabled = false;
   }
 }

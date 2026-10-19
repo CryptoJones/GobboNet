@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ElodineOfficial/GobboNet/internal/atomicfile"
 )
@@ -122,6 +123,9 @@ listen_port = 9066
 # and any *.local name are always accepted, which covers normal LAN use.
 # Add a name here only if you reach this server through DNS.
 # allowed_hosts = ["gobbonet.example.com"]
+# Or manage exact DuckDNS / Tailscale names in CONFIG > Network access.
+# Connect by IP first if the hostname is blocked. UI saves apply immediately;
+# manual config edits require a restart. No wildcards or provider-wide trust.
 
 # --- Local-backend (hot-swap) settings ----------------------------------
 # Set server_exe to the llama-server binary to run in LOCAL MODE, where
@@ -332,12 +336,19 @@ func (c *Config) Get(key string) (string, error) {
 	}
 }
 
+// Serialise read-modify-write operations within this process. Network access,
+// idle settings and password upgrades can save different keys concurrently;
+// atomic renames alone would still let one overwrite the other's new value.
+var setMu sync.Mutex
+
 // Set rewrites one key in the file at path, in place.
 //
 // This edits lines rather than re-serialising the parsed document, because
 // re-serialising would discard every comment in the file — and the comments are
 // the documentation. If the key is absent it is appended.
 func Set(path, key, value string) error {
+	setMu.Lock()
+	defer setMu.Unlock()
 	if _, ok := fieldByTOMLKey(&Config{}, key); !ok {
 		return fmt.Errorf("unknown config key %q", key)
 	}

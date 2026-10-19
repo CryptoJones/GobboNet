@@ -65,11 +65,57 @@ function idbGetAll(store)     { return new Promise((res, rej) => { const r = idb
 // resolve to a bare put(value).
 function idbPut(store, val, key) {
   return new Promise((res, rej) => {
-    const os = idbTx(store, 'readwrite');
-    const r = (key === undefined) ? os.put(val) : os.put(val, key);
-    r.onsuccess = () => res();
-    r.onerror   = () => rej(r.error);
+    const tx = _idb.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    tx.oncomplete = () => res();
+    tx.onabort = tx.onerror = () => rej(tx.error || new Error('Storage transaction aborted'));
+    try { (key === undefined) ? os.put(val) : os.put(val, key); }
+    catch (e) { tx.abort(); rej(e); }
   });
+}
+
+// A full snapshot is one commit. Publishing meta before conversations left a
+// seemingly initialized but empty database after a quota error or interrupted
+// migration. Restores must not clear the old conversations until the replacement
+// is guaranteed to commit, either. The marker is local-only, never synced.
+function idbWriteSnapshot(blob, replace = false, original = null) {
+  return new Promise((resolve, reject) => {
+    const tx = _idb.transaction(['meta', 'threads'], 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error || new Error('Storage transaction aborted'));
+    try {
+      const threads = tx.objectStore('threads');
+      if (original) tx.objectStore('meta').put(original, 'pre-split');
+      if (replace) threads.clear();
+      for (const thread of (blob.threads || [])) threads.put(thread);
+      tx.objectStore('meta').put({ ...metaPartOf(blob), _storageLayout: 1 }, 'app');
+    } catch (e) { tx.abort(); reject(e); }
+  });
+}
+
+let legacyBrowserRecovery = null;
+let storageRecoveryMessage = '';
+let storageLoadFailed = false;
+// Keep both names intact: the pre-upgrade blob is the rollback copy. A failed
+// copy/rename must never make that original disappear.
+function legacyBrowserSnapshot() {
+  let found = false;
+  for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+    let raw;
+    try { raw = localStorage.getItem(key); } catch (_) { continue; }
+    if (raw) {
+      found = true;
+      try {
+        const blob = JSON.parse(raw);
+        if (blob && typeof blob === 'object' && !Array.isArray(blob)) {
+          if (blob.threads === undefined && (Array.isArray(blob.characterCards) || Array.isArray(blob.personaCards) || (blob.settings && typeof blob.settings === 'object'))) blob.threads = [];
+          if (Array.isArray(blob.threads)) return { key, raw, blob };
+        }
+      } catch (_) { /* another known key may hold a valid snapshot */ }
+    }
+  }
+  if (found) throw new Error('Older browser history is not readable; original copies are preserved');
+  return null;
 }
 function idbBulkPutThreads(threads) {
   return new Promise((res, rej) => {
@@ -95,7 +141,7 @@ function idbClearStore(store) {
  * Destroy every local trace of the user's data.
  *
  * This exists because saving an empty state does NOT delete anything.
- * writeFullToIdb hands state.threads to idbBulkPutThreads, which iterates the
+ * writeFullToIdb uses idbWriteSnapshot without replacing the store, iterating the
  * array calling put() -- so an empty array iterates zero times, writes nothing,
  * and clears nothing. Every previously stored thread stays in the object store,
  * and the load path reads that store wholesale. PURGE ALL therefore reported
@@ -121,9 +167,12 @@ function idbClearStore(store) {
  */
 async function wipeLocalStorageAll() {
   const failed = [];
+  legacyBrowserRecovery = null;
+  storageRecoveryMessage = '';
+  storageLoadFailed = false;
 
   if (STORAGE_BACKEND === 'idb' && _idb) {
-    for (const store of ['threads', 'vectors', 'telemetry']) {
+    for (const store of ['threads', 'vectors', 'telemetry', 'meta']) {
       try {
         await idbClearStore(store);
       } catch (e) {
@@ -153,9 +202,9 @@ async function wipeLocalStorageAll() {
   // literals are the same values, kept only as a floor.
   let keys;
   try {
-    keys = [STORAGE_KEY, LEGACY_STORAGE_KEY, SYNC_META_KEY];
+    keys = [STORAGE_KEY, LEGACY_STORAGE_KEY, SYNC_META_KEY, 'gobbonet_before_upgrade_recovery'];
   } catch (e) {
-    keys = ['gobbonet_chat_state', 'gemma4_chat_state', 'gobbonet_sync_meta'];
+    keys = ['gobbonet_chat_state', 'gemma4_chat_state', 'gobbonet_sync_meta', 'gobbonet_before_upgrade_recovery'];
   }
   for (const k of keys) {
     try { localStorage.removeItem(k); } catch (e) { failed.push(k); }
@@ -483,28 +532,60 @@ async function loadState(rawOverride) {
   if (STORAGE_BACKEND === 'idb') {
     try {
       const meta = await idbGet('meta', 'app');
+      const threads = await idbGetAll('threads');
       if (meta) {
-        // Normal IDB load: reconstruct the blob from meta + per-thread records.
-        const threads = await idbGetAll('threads');
-        if (applyLoadedState({ ...meta, threads })) await persistAdoptedThreadOrder(meta);
+        // Some older databases carry the merged document in the meta record.
+        // Split it without dropping per-thread records that already exist.
+        if (Array.isArray(meta.threads) && meta.threads.length) {
+          const originalMeta = JSON.parse(JSON.stringify(meta));
+          const byId = new Map(meta.threads.map(t => [t.id, t]));
+          const conflicting = threads.some(t => byId.has(t.id) && JSON.stringify(byId.get(t.id)) !== JSON.stringify(t));
+          for (const t of threads) byId.set(t.id, t);
+          const merged = { ...meta, threads: Array.from(byId.values()) };
+          if (!applyLoadedState(merged)) throw new Error('Could not read older browser history');
+          if (conflicting) legacyBrowserRecovery = { blob: originalMeta, raw: JSON.stringify(originalMeta) };
+          try {
+            await idbWriteSnapshot(buildStateBlob(), true, originalMeta);
+            if (conflicting) await idbPut('meta', true, 'recovery-offered');
+          }
+          catch (e) { storageRecoveryMessage = 'Older history is loaded, but the local migration could not be saved. Free disk space and reopen GobboNet. The original database is preserved.'; }
+          return;
+        }
+        const retained = await idbGet('meta', 'pre-split');
+        if (retained && Array.isArray(retained.threads) && await idbGet('meta', 'recovery-offered')) legacyBrowserRecovery = { blob: retained, raw: JSON.stringify(retained) };
+        // An unmarked empty split database may be an interrupted old migration,
+        // or a deliberate deletion. Offer the untouched old copy in DATA;
+        // never guess and resurrect deleted chats automatically.
+        if (!meta._storageLayout && threads.length === 0) {
+          const legacy = legacyBrowserSnapshot();
+          if (legacy && legacy.blob.threads.length) {
+            legacyBrowserRecovery = legacy;
+            try {
+              await idbPut('meta', legacy.blob, 'pre-split');
+              await idbPut('meta', true, 'recovery-offered');
+            } catch (_) {}
+            storageRecoveryMessage = 'An older browser backup with ' + legacy.blob.threads.length + ' conversation(s) is available. Open DATA > Upgrade recovery to restore it.';
+          }
+        }
+        if (!applyLoadedState({ ...meta, threads })) throw new Error('Could not read browser history');
+        await persistAdoptedThreadOrder(meta);
         return;
       }
-      // Fresh IDB. If a localStorage blob exists, this is an existing user —
-      // migrate it once. (Honor the legacy-key rename first, as before.)
-      if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(LEGACY_STORAGE_KEY)) {
-        localStorage.setItem(STORAGE_KEY, localStorage.getItem(LEGACY_STORAGE_KEY));
-        localStorage.removeItem(LEGACY_STORAGE_KEY);
-      }
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        applyLoadedState(JSON.parse(raw));      // runs migrations into `state`
+      const legacy = legacyBrowserSnapshot();
+      if (legacy || threads.length) {
+        const original = legacy ? legacy.blob : { threads };
+        const byId = new Map((original.threads || []).map(t => [t.id, t]));
+        for (const t of threads) byId.set(t.id, t);
+        if (!applyLoadedState({ ...original, threads: Array.from(byId.values()) })) throw new Error('Could not read older browser history');
         try {
-          const blob = buildStateBlob();        // capture the migrated state
-          await idbPut('meta', metaPartOf(blob), 'app');
-          await idbBulkPutThreads(blob.threads);
-          console.log('[storage] Migrated localStorage state into IndexedDB.');
+          await idbWriteSnapshot(buildStateBlob(), true, original);
+          console.log('[storage] Migrated older browser history into IndexedDB. Original retained.');
         } catch (mErr) {
-          console.warn('[storage] localStorage→IndexedDB migration failed (will retry next save):', mErr && mErr.message);
+          // Continue using the intact old backend for this session. Retry the
+          // migration on the next load, not with a partially initialized DB.
+          if (legacy && threads.length === 0) STORAGE_BACKEND = 'localstorage';
+          storageRecoveryMessage = 'Your older history is loaded. Browser database migration could not finish; GobboNet is using the original storage and will retry next time.';
+          console.warn('[storage] Migration deferred:', mErr && mErr.message);
         }
         return;
       }
@@ -515,27 +596,30 @@ async function loadState(rawOverride) {
       // path rather than booting empty.
       console.warn('[storage] IndexedDB read failed — falling back to localStorage:', e && e.message);
       STORAGE_BACKEND = 'localstorage';
+      storageLoadFailed = true;
+      storageRecoveryMessage = 'Could not read the browser database. Automatic saves and sync are paused to protect it. Reopen GobboNet to retry, or use DATA to recover a backup.';
     }
   }
 
   // Path C — localStorage fallback (IDB unavailable or read failed).
   try {
-    if (!localStorage.getItem(STORAGE_KEY) && localStorage.getItem(LEGACY_STORAGE_KEY)) {
-      localStorage.setItem(STORAGE_KEY, localStorage.getItem(LEGACY_STORAGE_KEY));
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
-    }
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const legacy = legacyBrowserSnapshot();
+    if (storageLoadFailed && legacy) legacyBrowserRecovery = legacy;
+    const raw = legacy ? legacy.raw : localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const saved = JSON.parse(raw);
       // A legacy threadOrder list was just carried into the conversations'
       // own keys; write that back now so it is not carried twice (see
       // persistAdoptedThreadOrder). Best-effort, like every save here.
-      if (applyLoadedState(saved) && Array.isArray(saved.threadOrder)) {
+      if (!applyLoadedState(saved)) throw new Error('Could not apply older browser history');
+      if (!storageLoadFailed && Array.isArray(saved.threadOrder)) {
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(buildStateBlob())); }
         catch (e) { console.warn('[order] Arrangement carried over in memory; saving it waits for the next save:', e && e.message); }
       }
     }
   } catch (e) {
+    storageLoadFailed = true;
+    storageRecoveryMessage = 'Could not read saved browser history. Automatic saves and sync are paused; the original is preserved. Use DATA to recover a backup.';
     console.error('Failed to load state from localStorage:', e);
   }
 }
@@ -691,7 +775,7 @@ function buildStateMeta() {
 
 // The blob without `threads` — i.e. the contents of the IDB 'meta' record.
 function metaPartOf(blob) {
-  const { threads, ...meta } = blob;
+  const { threads, _storageLayout, ...meta } = blob;
   return meta;
 }
 
@@ -705,10 +789,9 @@ let _idbFullSaveTimer = null;
 let _idbPendingBlob = null;
 
 function writeFullToIdb(blob) {
-  // Sequential (meta then threads) so a failure is logged once with context.
+  // Metadata and conversations commit together, including on ordinary saves.
   Promise.resolve()
-    .then(() => idbPut('meta', metaPartOf(blob), 'app'))
-    .then(() => idbBulkPutThreads(blob.threads))
+    .then(() => idbWriteSnapshot(blob))
     .then(() => {
       if (storageQuotaHit) { // recovered (e.g. disk freed up)
         storageQuotaHit = false;
@@ -760,6 +843,7 @@ function flushPendingIdbSave() {
 }
 
 function saveState(opts) {
+  if (storageLoadFailed) return;
   // opts.skipServerSchedule: persist locally only, don't arm the debounced
   // /state push. Used by the streaming-tick saves and the visibilitychange /
   // pagehide exit save — during a generation the server push always defers

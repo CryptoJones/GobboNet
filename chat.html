@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="css/17-markdown.css">
 </head>
 <body>
+<button class="btn btn-sm" id="upgrade-recovery-notice" onclick="openDataManager()" style="display:none;position:fixed;bottom:12px;right:12px;z-index:1000;max-width:90vw;" aria-label="Open upgrade history recovery">Older history / storage notice — open DATA</button>
 
 <div id="app">
   <!-- SIDEBAR -->
@@ -299,6 +300,15 @@
         <button class="btn btn-sm" id="lan-save" onclick="saveLanSettings()">SAVE FOR NEXT START</button>
       </div>
       <div class="standdown-status" id="lan-status"></div>
+    </div>
+
+    <div class="form-group" id="network-hosts-group" style="margin-top:12px; padding:12px; border:1px solid var(--green-dim); border-radius:var(--radius);">
+      <label for="set-network-hosts">Network access &mdash; custom hostnames</label>
+      <div class="form-hint">Using DuckDNS, Tailscale MagicDNS or your own domain? Add the exact names you control, one per line. You can paste an http:// or https:// address with its port. IP addresses, localhost and .local names already work. If a name is blocked, open GobboNet by IP first and add it here.</div>
+      <textarea id="set-network-hosts" rows="3" spellcheck="false" autocapitalize="none" placeholder="my-goblin.duckdns.org&#10;desktop.your-tailnet.ts.net" disabled></textarea>
+      <div class="form-hint">Only listed names are trusted; wildcards are not accepted. This does not open ports, change DNS, or set up HTTPS. Keep remote access private through your VPN. This setting applies to this server and saves immediately, independently of the other CONFIG settings.</div>
+      <button class="btn btn-sm" id="network-hosts-save" onclick="saveNetworkHosts()" disabled>SAVE NETWORK NAMES</button>
+      <div class="form-hint" id="network-hosts-status" role="status" aria-live="polite"></div>
     </div>
 
     <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid var(--green-dim); border-radius:var(--radius); background:rgba(0,255,65,0.03);">
@@ -1114,6 +1124,20 @@ gobbo.every(5, async () =&gt; {
 <div class="modal-backdrop" id="data-modal">
   <div class="modal">
     <h2>DATA</h2>
+
+    <div class="data-section" id="upgrade-recovery" style="display:none;">
+      <div class="data-section-header">UPGRADE RECOVERY</div>
+      <div class="data-section-body">
+        <div class="form-hint" id="upgrade-recovery-message" role="status" aria-live="polite"></div>
+        <button class="btn btn-sm" id="upgrade-recovery-browser" onclick="recoverUpgradeHistory('browser')">RESTORE OLDER BROWSER HISTORY</button>
+        <div id="upgrade-recovery-server">
+          <label for="upgrade-recovery-profile">Preserved server history</label>
+          <select id="upgrade-recovery-profile"></select>
+          <button class="btn btn-sm" onclick="recoverUpgradeHistory('server')">OPEN RECOVERY PROFILE</button>
+        </div>
+        <button class="btn btn-sm" onclick="downloadBeforeUpgradeRecovery()">DOWNLOAD BEFORE-RECOVERY COPY</button>
+      </div>
+    </div>
 
     <!-- EXPORT -->
     <div class="data-section">

@@ -13,6 +13,7 @@
 // + read is fast but not zero.
 window.GobboNet.ready = (async function boot() {
   await loadState();
+  if (typeof checkUpgradeRecovery === 'function') await checkUpgradeRecovery();
 
   // The [ui] presets from gobbonet.toml. Awaited rather than fired and
   // forgotten: on a device with no settings of its own these become the

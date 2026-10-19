@@ -54,6 +54,13 @@ type Server struct {
 	cfg  config.Config
 	mode config.Mode
 
+	// Custom hostnames can be updated from CONFIG without mutating cfg.
+	hostsMu      sync.RWMutex
+	allowedHosts []string
+	legacyMu     sync.Mutex
+	legacyDone   bool
+	legacyResult state.LegacyMigration
+
 	// web is the frontend: the copy built into the binary, or a disk directory
 	// layered over it when web_root names one. Resolved once in New rather than
 	// looked up per request, so a request can never be served by a different
@@ -142,15 +149,16 @@ func New(cfg config.Config, mode config.Mode, sup *supervisor.Supervisor) (*Serv
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		mode:     mode,
-		web:      webSrc.FS,
-		webSrc:   webSrc,
-		sessions: auth.NewSessionStore(cfg.SessionTTLHours),
-		limiter:  auth.NewLoginLimiter(),
-		sup:      sup,
-		secret:   cfg.AccessSecret,
-		tuning:   newTuning(cfg),
+		cfg:          cfg,
+		allowedHosts: append([]string{}, cfg.AllowedHosts...),
+		mode:         mode,
+		web:          webSrc.FS,
+		webSrc:       webSrc,
+		sessions:     auth.NewSessionStore(cfg.SessionTTLHours),
+		limiter:      auth.NewLoginLimiter(),
+		sup:          sup,
+		secret:       cfg.AccessSecret,
+		tuning:       newTuning(cfg),
 	}
 
 	s.info = models.NewInfo(cfg.LLMURL, cfg.LLMAPIKey, cfg.ModelDir, mode == config.ModeLocal)
@@ -227,8 +235,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Host validation before anything else. We bind 0.0.0.0 by default, so a
 	// DNS-rebinding page could otherwise reach us from a victim's browser with
 	// their session cookie attached.
-	if !s.cfg.HostAllowed(r.Host) {
-		httpx.Error(w, r, http.StatusMisdirectedRequest, "unrecognised Host header")
+	if !s.hostAllowed(r.Host) {
+		httpx.ErrorDetail(w, r, http.StatusMisdirectedRequest, "unrecognised Host header",
+			"Open GobboNet using this machine's IP address or localhost, sign in, then add your exact DuckDNS, Tailscale or other hostname in CONFIG > Network access. Only add names you control. On older builds, set allowed_hosts in config.toml and restart.")
 		return
 	}
 
@@ -277,6 +286,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/health-fileserver":
 		s.handleHealth(w, r)
+	case path == "/network/hosts":
+		s.handleNetworkHosts(w, r)
 
 	case path == "/active-model.json":
 		// The live context size, not cfg's: a /perf change that has been applied
@@ -314,6 +325,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/state" || strings.HasPrefix(path, "/state/"):
 		key, unlocked := s.stateVault(w, r)
 		if !unlocked {
+			return
+		}
+		migration, err := s.importLegacyHistory(key)
+		if err != nil {
+			httpx.ErrorDetail(w, r, http.StatusConflict, "Older history could not be migrated; sync is paused to protect it", err.Error())
+			return
+		}
+		if path == "/state/migration" {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				httpx.Error(w, r, http.StatusMethodNotAllowed, "GET only")
+				return
+			}
+			httpx.WriteJSON(w, r, http.StatusOK, migration)
 			return
 		}
 		state.Handle(w, r, s.cfg.StatePath(), key)

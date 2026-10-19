@@ -95,7 +95,7 @@ function syncIsOff() {
  *  this file goes through it, so 'off' is one decision rather than a condition
  *  repeated in a dozen places where one could be forgotten. */
 function syncEnabled() {
-  return STATE_SYNC_AVAILABLE && !syncIsOff();
+  return STATE_SYNC_AVAILABLE && !syncIsOff() && !(typeof storageLoadFailed !== 'undefined' && storageLoadFailed);
 }
 
 /** A /state URL for the current target. `suffix` is '' or '/info'. */
@@ -632,6 +632,7 @@ async function restoreFromServer(opts) {
         Object.assign(state, previous);
         throw new Error('Could not apply server state');
       }
+      if (typeof storageLoadFailed !== 'undefined') storageLoadFailed = false;
       invalidateLedger();
       if (stateSync.pushTimer) { clearTimeout(stateSync.pushTimer); stateSync.pushTimer = null; }
       stateSync.pendingPush = false;
@@ -644,9 +645,7 @@ async function restoreFromServer(opts) {
       try {
         const blob = buildStateBlob();
         if (STORAGE_BACKEND === 'idb') {
-          await idbPut('meta', metaPartOf(blob), 'app');
-          await idbClearThreads();
-          await idbBulkPutThreads(blob.threads);
+          await idbWriteSnapshot(blob, true);
         } else {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
         }
@@ -698,9 +697,7 @@ async function restoreFromServer(opts) {
     if (STORAGE_BACKEND === 'idb') {
       // No 5 MB cap here, so the localStorage in-memory fallback below isn't
       // needed on this path — just rewrite the records and reload.
-      await idbPut('meta', metaPartOf(parsed), 'app');
-      await idbClearThreads();
-      await idbBulkPutThreads(parsed.threads || []);
+      await idbWriteSnapshot(parsed, true);
       location.reload();
       return true;
     }

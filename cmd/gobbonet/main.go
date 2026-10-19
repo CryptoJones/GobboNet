@@ -144,6 +144,8 @@ func run(argv []string) error {
 	}
 
 	switch command {
+	case "launch":
+		return cmdLaunch(argv)
 	case "serve":
 		return cmdServe(argv)
 	case "set-password":
@@ -184,6 +186,7 @@ func usage() {
   gobbonet [serve] [--config PATH] [--no-auth] [--host H] [--port N] [--open]
                    [--model FILE.gguf]
   gobbonet set-password [--config PATH] [--stdin]
+  gobbonet launch [--config PATH]  (desktop launch; opens the browser)
   gobbonet setup [--config PATH] [--catalog PATH] [--server-exe PATH]
                  [--no-browser] [--force]
   gobbonet autostart [--enable] [--disable]

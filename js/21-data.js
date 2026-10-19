@@ -577,6 +577,7 @@ async function purgeData(type) {
    DATA MANAGER MODAL
 ================================================================ */
 function openDataManager() {
+  renderUpgradeRecovery();
   // Reset import status each time the modal opens
   const statusEl = document.getElementById('import-status');
   if (statusEl) statusEl.style.display = 'none';
@@ -890,3 +891,108 @@ function closeDataManager() {
   document.getElementById('data-modal').classList.remove('open');
 }
 
+
+/* UPGRADE RECOVERY — discovered data stays reachable without file hunting. */
+let upgradeServerProfiles = [];
+let upgradeRecoveryStatus = '';
+let upgradeRecoveryBusy = false;
+async function checkUpgradeRecovery() {
+  if (typeof syncEnabled === 'function' && syncEnabled()) {
+    try {
+      const resp = await fetch(STATE_SYNC_BASE + '/migration', { cache: 'no-store' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data.recovery_profiles)) {
+          upgradeServerProfiles = data.recovery_profiles.filter(x => typeof x === 'string' && /^legacy-[a-f0-9]{16}$/.test(x));
+        }
+      }
+    } catch (_) { /* the regular state check reports connection failures */ }
+  }
+  renderUpgradeRecovery();
+}
+function renderUpgradeRecovery() {
+  const box = document.getElementById('upgrade-recovery');
+  if (!box) return;
+  const browser = typeof legacyBrowserRecovery !== 'undefined' && legacyBrowserRecovery;
+  const message = typeof storageRecoveryMessage === 'string' ? storageRecoveryMessage : '';
+  const available = !!browser || upgradeServerProfiles.length > 0;
+  box.style.display = available || message || upgradeRecoveryStatus ? '' : 'none';
+  document.getElementById('upgrade-recovery-message').textContent = upgradeRecoveryStatus || message || 'Older history was preserved separately from your current history. Choose a recovery copy below.';
+  document.getElementById('upgrade-recovery-browser').style.display = browser ? '' : 'none';
+  const select = document.getElementById('upgrade-recovery-profile');
+  select.textContent = '';
+  for (const name of upgradeServerProfiles) {
+    const option = document.createElement('option');
+    option.value = option.textContent = name;
+    select.appendChild(option);
+  }
+  document.getElementById('upgrade-recovery-server').style.display = upgradeServerProfiles.length ? '' : 'none';
+  const badge = document.getElementById('data-btn');
+  if (badge) badge.textContent = available || message ? '// DATA — RECOVERY' : '// DATA';
+  // Visible on mobile too, where the sidebar may be closed.
+  const notice = document.getElementById('upgrade-recovery-notice');
+  if (notice) notice.style.display = available || message ? '' : 'none';
+}
+async function preserveBeforeUpgradeRecovery() {
+  const blob = buildStateBlob();
+  if (STORAGE_BACKEND === 'idb') {
+    const previous = await idbGet('meta', 'pre-recovery');
+    if (previous) await idbPut('meta', previous, 'pre-recovery-' + Date.now());
+    await idbPut('meta', blob, 'pre-recovery');
+  }
+  else localStorage.setItem('gobbonet_before_upgrade_recovery', JSON.stringify(blob));
+  // Cancel delayed writes of the snapshot we are replacing.
+  if (_idbFullSaveTimer) clearTimeout(_idbFullSaveTimer);
+  _idbFullSaveTimer = null; _idbPendingBlob = null;
+  if (stateSync.pushTimer) clearTimeout(stateSync.pushTimer);
+  stateSync.pushTimer = null; stateSync.pendingPush = false;
+}
+async function recoverUpgradeHistory(kind) {
+  if (upgradeRecoveryBusy) return;
+  if (isGenerating) { alert('Stop the current reply before recovering history.'); return; }
+  if (!confirm('Load this older history? Your current browser history will be kept as a recovery copy. Existing server profiles and the original older files will remain intact.')) return;
+  upgradeRecoveryBusy = true;
+  try {
+    await preserveBeforeUpgradeRecovery();
+    if (kind === 'browser') {
+      if (!legacyBrowserRecovery) throw new Error('The older browser copy is unavailable.');
+      const blob = JSON.parse(legacyBrowserRecovery.raw);
+      validateServerSnapshot(blob);
+      if (typeof neutralizeUntrustedCode === 'function') neutralizeUntrustedCode(blob);
+      // Restore locally first; never let recovery replace a shared server copy.
+      syncTarget = { mode: 'off', profile: '' }; persistSyncTarget();
+      if (!applyLoadedState(blob)) throw new Error('Could not read the older history.');
+      if (STORAGE_BACKEND === 'idb') await idbWriteSnapshot(buildStateBlob(), true);
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(buildStateBlob()));
+      storageLoadFailed = false;
+      stateSync.status = 'off';
+      render(); applyAvatarScale(); applyActiveCardBackground();
+    } else {
+      const profile = document.getElementById('upgrade-recovery-profile').value;
+      if (!upgradeServerProfiles.includes(profile)) throw new Error('Choose an available recovery profile.');
+      const previous = { ...syncTarget };
+      syncTarget = { mode: 'profile', profile }; persistSyncTarget();
+      if (!await restoreFromServer({ inPlace: true, silent: true })) {
+        syncTarget = previous; persistSyncTarget();
+        throw new Error('Could not load that recovery profile. Your previous sync target is unchanged.');
+      }
+    }
+    invalidateLedger();
+    upgradeRecoveryStatus = kind === 'browser'
+      ? 'Older history restored on this device. Sync is off to protect other copies; choose sharing under DEVICE SYNC when ready.'
+      : 'Older history loaded from its separate recovery profile. Your other server history remains intact.';
+    updateSyncIndicator(); renderSyncTargetPanel();
+  } catch (e) {
+    upgradeRecoveryStatus = 'Recovery could not finish: ' + e.message + ' The original copies are preserved.';
+  }
+  upgradeRecoveryBusy = false;
+  renderUpgradeRecovery();
+}
+async function downloadBeforeUpgradeRecovery() {
+  try {
+    const blob = STORAGE_BACKEND === 'idb' ? await idbGet('meta', 'pre-recovery')
+      : JSON.parse(localStorage.getItem('gobbonet_before_upgrade_recovery') || 'null');
+    if (!blob) { alert('No recovery has replaced this browser history yet.'); return; }
+    downloadJSON({ ...blob, gobbonet_export: 'full', version: 1 }, 'gobbonet-before-recovery.json');
+  } catch (e) { alert('Could not read the safety copy: ' + e.message); }
+}

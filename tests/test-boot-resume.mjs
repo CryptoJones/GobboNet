@@ -44,7 +44,7 @@ function harness({ status = 200, noticeSeen = true, remoteNoticeSeen = true } = 
     sessionStorage: { getItem: () => null, setItem() {} },
     document: { addEventListener() {}, getElementById: () => ({ classList: { toggle() {} }, textContent: '' }), querySelector: () => null },
     state: { threads: [], settings: noticeSeen ? { remoteImageNoticeSeen: true } : {}, characterCards: [{ id: 'default', name: 'Assistant' }] },
-    isGenerating: false, STORAGE_BACKEND: 'localstorage', storageQuotaHit: false, STORAGE_KEY: 'state',
+    isGenerating: false, STORAGE_BACKEND: 'localstorage', storageLoadFailed:false, storageQuotaHit: false, STORAGE_KEY: 'state',
     DEFAULT_SETTINGS: {}, DEFAULT_CARD: { id: 'default' }, DEFAULT_PERSONA: { id: 'default' }, DEFAULT_MACROS: [],
     STATE_SCHEMA_VERSION: 1, loadedSchemaVersion: null, hadOwnSettings: false, sortThreadsByOrder() {},
     migrateExtensions: e => e || {}, _idbFullSaveTimer: null, _idbPendingBlob: null,
@@ -123,7 +123,7 @@ const saveSrc = persistence.slice(persistence.indexOf('function saveState('),
 function saveHarness(backend) {
   const calls = [];
   const ctx = {
-    console: { log() {}, warn() {}, error() {} }, STORAGE_BACKEND: backend, storageQuotaHit: false,
+    console: { log() {}, warn() {}, error() {} }, STORAGE_BACKEND: backend, storageLoadFailed:false, storageQuotaHit: false,
     state: { threads: [{ id: 't1', messages: [] }], activeThreadId: 't1', settings: { remoteImageNoticeSeen: true } },
     buildStateBlob: () => ({ settings: { remoteImageNoticeSeen: true }, threads: [] }),
     getActiveThread: () => ({ id: 't1', messages: [] }), cleanThread: t => t,

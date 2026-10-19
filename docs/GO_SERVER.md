@@ -330,6 +330,31 @@ literals, `localhost` and any `*.local` name are always accepted — that covers
 normal LAN use, where you type an address rather than a name. Any other hostname
 must be listed in `allowed_hosts`.
 
+For DuckDNS, Tailscale MagicDNS (short names or full `.ts.net` names), or your
+own domain, first open GobboNet by IP address or `localhost` and sign in. In
+**CONFIG > Network access**, add the exact names you control, one per line,
+then choose **SAVE NETWORK NAMES**. A pasted HTTP(S) address is accepted; only
+its hostname is saved. Changes apply immediately and survive restart. These
+are server settings, separate from the other CONFIG settings and their Cancel
+button. To remove the name you are currently using, connect by IP first.
+
+An `unrecognised Host header` response means the request reached GobboNet but
+its hostname is not trusted. Pointing DuckDNS at the same IP does not make its
+Host header the same as a request to the IP. Do not disable the check or allow
+all DuckDNS/Tailscale domains: an unrelated hostname can resolve to your IP too.
+
+For existing versions without the panel, add the names at the **top level** of
+the active `config.toml` (before any `[table]` headings), then restart GobboNet:
+
+```toml
+allowed_hosts = ["my-goblin.duckdns.org", "desktop.your-tailnet.ts.net", "desktop"]
+```
+
+The CLI alternative is `gobbonet config set allowed_hosts "my-goblin.duckdns.org desktop.your-tailnet.ts.net desktop"`.
+Use your own names. This setting does not configure DNS, port forwarding, TLS,
+or Tailscale routing. Password authentication still applies; a new hostname
+may ask you to sign in again. Use a private VPN for remote access.
+
 ## Generation jobs
 
 `/llm/jobs*` holds the upstream connection so a reply survives the browser
@@ -578,3 +603,24 @@ internal/static/       static file serving (over an fs.FS)
 internal/httpx/        response helpers, CORS, MIME
 internal/webui/        the frontend, compiled in; assets/ is staged, not committed
 ```
+
+## Upgrading older history
+
+The hostname/history patch automatically imports the older PowerShell
+`.gobbonet-state.json` from known installation directories after sign-in. If
+there is no current shared history, it becomes `state.json`; if current history
+already exists, the older copy becomes a separate recovery profile. Open
+**DATA > Upgrade recovery** to access it. Original files remain untouched.
+
+The browser also migrates merged localStorage history into split IndexedDB
+records atomically. Interrupted older migrations are detected where possible;
+ambiguous older copies are offered in Upgrade recovery. Restoring browser
+history keeps sync off until you choose a target, so it cannot overwrite
+another device's history. The panel can download the browser snapshot retained
+before recovery.
+
+Keep `legacy-import.json` in the data directory. It prevents intentional history
+deletions from being undone by reimporting a retained old file. New imported
+history is encrypted if the install is encrypted; retained old plaintext
+originals are not rewritten. Files moved elsewhere and browser data belonging
+to another origin can still be recovered with the normal DATA import workflow.

@@ -391,6 +391,13 @@ they cannot drift from what ships.
 
 ## Go tests
 
+`test-network-hosts.mjs` exercises the CONFIG network access panel, including
+failed saves, authentication expiry and servers without the endpoint.
+`internal/server/network_hosts_test.go` reproduces the DuckDNS/Tailscale Host
+rejection and checks immediate approval, persistence across restart, removal,
+authentication, same-origin writes, unrelated-domain rejection and concurrent
+requests. No external DNS or VPN is needed for these tests.
+
 Alongside the code they cover, run the usual way:
 
 ```sh
@@ -402,3 +409,16 @@ rewritten: when the version changes, and when the page built into the binary
 changes under the same version. Hand edits survive restarts of the same build.
 Background is in
 [`docs/changelog/CHANGELOG-1.7.7-web-refresh.md`](../docs/changelog/CHANGELOG-1.7.7-web-refresh.md).
+
+## Upgrade migration regressions
+
+`test-storage-migration.mjs` exercises atomic browser migration/restore, aborts,
+retries, merged/orphaned records, old copies and read failure protection.
+`test-upgrade-recovery.mjs` covers the DATA recovery actions and their safety
+copies. Go coverage is in `internal/state/legacy_test.go` and
+`internal/server/legacy_history_test.go`, including encryption and restart.
+
+Windows application launch regression: `go test ./cmd/gobbonet` covers fresh,
+existing, explicit-missing and corrupt configuration decisions. Installer
+shortcut regression checks will be integrated during the installer phase.
+Native Windows installer/shortcut smoke tests remain required.

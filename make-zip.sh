@@ -109,6 +109,7 @@ bash ./stage-web.sh
 MANIFEST='
 gobbonet.exe
 gobbonet
+repair-windows-shortcuts.ps1
 launch.bat
 fileserver.ps1
 chat.html
@@ -191,6 +192,7 @@ copy_in() {
 # installer-linux/gobbonet-zip-entry just after this loop instead.
 for rel in \
     gobbonet.exe launch.bat fileserver.ps1 setup-lan.bat teardown-lan.bat \
+    "Repair Windows shortcuts.bat" repair-windows-shortcuts.ps1 PATCH-README.txt \
     stop-gobbonet.bat hardware-probe.ps1 hw-recommend.ps1 identify-model.ps1 \
     chat.html default-characters.json gobbonet.ico VERSION \
     README.md TROUBLESHOOTING.md SECURITY.md LINUX-START-HERE.md LICENSE AGENTS.md \
@@ -244,8 +246,10 @@ This archive is an UPDATE. It leaves out the bundled llama.cpp engine
 (linux-amd64/llama-cpp), which has not changed in this release.
 
 Updating an existing install:
-  Windows   replace gobbonet.exe. That is the whole update -- the chat
-            screen is inside it. Close GobboNet first.
+  Windows   close GobboNet and extract the complete update over the existing
+            application folder. Keep config, engine, models and history.
+            Run Repair Windows shortcuts.bat, then Launch GobboNet from the
+            Start menu. Re-pin older taskbar shortcuts if necessary.
   Linux     replace the linux-amd64 folder. Your existing llama-cpp folder
             stays where it is; this archive does not overwrite it.
 

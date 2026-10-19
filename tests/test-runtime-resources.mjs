@@ -10,7 +10,7 @@ const ctx={console, state:{threads:[active,background],activeThreadId:'active'},
  getActiveThread:()=>active,idbPut:async(store,value)=>writes.push({store,value}),
  buildStateBlob:()=>{fullBuilds++;return {threads:[active,background]};},
  saveFullToIdb:blob=>writes.push({store:'full',value:blob}),scheduleStateSync(){},
- STORAGE_KEY:'state',localStorage:{setItem:(key,value)=>writes.push({store:'local',value})},storageQuotaHit:false};
+ STORAGE_KEY:'state',localStorage:{setItem:(key,value)=>writes.push({store:'local',value})},storageLoadFailed:false, storageQuotaHit:false};
 vm.createContext(ctx);
 vm.runInContext(p.slice(p.indexOf('const RUNTIME_MESSAGE_FIELDS'),p.indexOf('// In-memory `state`'))+'\n'+p.slice(p.indexOf('function saveState(opts)'),p.indexOf('function getActiveCard()')),ctx);
 ctx.saveState({skipServerSchedule:true});

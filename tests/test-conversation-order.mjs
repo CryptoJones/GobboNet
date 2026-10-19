@@ -27,7 +27,8 @@ async function check(name, fn) {
 const stateSrc = read('04-state.js');
 const orderingSrc = stateSrc.slice(stateSrc.indexOf('const ORDER_KEY_STEP'), stateSrc.indexOf('let isGenerating = false;'));
 const persistenceSrc = read('05-persistence.js');
-const loaderSrc = persistenceSrc.slice(persistenceSrc.indexOf('function applyLoadedState('),
+const recoverySrc = persistenceSrc.slice(persistenceSrc.indexOf('let legacyBrowserRecovery'), persistenceSrc.indexOf('function idbBulkPutThreads'));
+const loaderSrc = recoverySrc + '\n' + persistenceSrc.slice(persistenceSrc.indexOf('function applyLoadedState('),
                                        persistenceSrc.indexOf('/**\n * Build a JSON string suitable'));
 
 // Timestamps relative to the real clock: drops at the top of the list and

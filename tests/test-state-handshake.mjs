@@ -57,13 +57,10 @@ for (const storage of ['denied','discard','working']) {
 for (const denied of [false, true]) {
  const h=harness();const writes=[];
  h.ctx.STORAGE_BACKEND='idb';
- h.ctx.idbPut=async(store,value)=>{if(denied)throw Error('IDB denied');writes.push(value);};
- h.ctx.idbClearThreads=async()=>writes.push('cleared');
- h.ctx.idbBulkPutThreads=async threads=>writes.push(threads);
- h.ctx.metaPartOf=blob=>{const {threads,...meta}=blob;return meta;};
+ h.ctx.idbWriteSnapshot=async(blob,replace)=>{if(denied)throw Error('IDB denied');writes.push({blob,replace});};
  await h.ctx.checkServerStateOnBoot();
  assert.equal(h.ctx.state.activeCardId,'b');
- if(!denied){assert.equal(writes[0].characterCards.length,2);assert.equal(writes[1],'cleared');assert.equal(writes[2].length,0);}
+ if(!denied){assert.equal(writes[0].blob.characterCards.length,2);assert.equal(writes[0].replace,true);assert.equal(writes[0].blob.threads.length,0);}
 }
 {
  const remote=snapshot();delete remote.threads;

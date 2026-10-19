@@ -307,7 +307,7 @@ function deleteThread(id, event) {
     state.activeThreadId = state.threads.length > 0 ? state.threads[0].id : null;
   }
   // The IndexedDB record has to go explicitly. A full save only ever PUTs the
-  // threads that still exist (writeFullToIdb -> idbBulkPutThreads), so nothing
+  // threads that still exist (writeFullToIdb -> idbWriteSnapshot), so nothing
   // in the save path removes a record -- the same gap wipeLocalStorageAll()
   // documents for PURGE ALL. Left behind, the record is read straight back
   // into state by the next boot and the deleted chat reappears.

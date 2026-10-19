@@ -1024,7 +1024,7 @@ func (c *Config) HostAllowed(host string) bool {
 		return true
 	}
 	for _, allowed := range c.AllowedHosts {
-		if strings.EqualFold(strings.TrimSpace(allowed), name) {
+		if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(allowed), "."), name) {
 			return true
 		}
 	}
