@@ -1,4 +1,20 @@
-# GobboNet Windows installer
+# GobboNet Windows installer (unreleased design — do not ship)
+
+> **This is not the Windows installer.** The one that ships is
+> [`installer-win/`](../installer-win/README.md): the dark installer whose first
+> launch opens `launch.bat` in a console window, where the hardware is detected
+> and the model is chosen.
+>
+> This directory chooses a backend and downloads a model *during setup*. That
+> is not how GobboNet installs on Windows. It was built by mistake for 1.7.4,
+> and again for the first 1.7.7 test build (2026-10-12), which the maintainer
+> rejected:
+>
+> > INITIAL INSTALL PAGE > DESTINATION > WHERE MODELS RUN [shouldn't even BE
+> > HERE this is LINUX ONLY ON THE INSTALLER RN] > Detect hardware > NO PICKING
+> > A MODEL UNTIL CMD POPS UP > Start Gobbonet or launch phone access.
+>
+> Kept for reference only. Do not build it for a release.
 
 Turns "downloaded the setup exe" into "chatting" with no console window in
 between. Everything `launch.bat` used to ask at a `C:\>` prompt — hardware

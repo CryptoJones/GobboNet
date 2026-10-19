@@ -18,6 +18,11 @@ function openSettings() {
   document.getElementById('set-cot-timeout-enabled').checked = !!state.settings.cotTimeoutEnabled;
   document.getElementById('set-cot-timeout-minutes').value = state.settings.cotTimeoutMinutes || 2;
   updateCotTimeoutRow();
+  // Shown as the value that will actually apply, via the same readers the
+  // features use -- so a missing or nonsense stored value shows its default.
+  document.getElementById('set-auto-continue-delay').value = autoContinueDelayMs() / 1000;
+  document.getElementById('set-auto-continue-max').value = autoContinueMaxChain();
+  document.getElementById('set-lore-timeout').value = loreTimeoutMs() / 1000;
   // Smart response limit
   const aScale = state.settings.avatarScale || 1;
   document.getElementById('set-avatar-scale').value = aScale;
@@ -40,6 +45,7 @@ function openSettings() {
   // is hidden with an explanation instead. Runs on open rather than at boot so
   // it is correct even if the panel is built before 02-model.js has run.
   try { applyModelCatalogAvailability(); } catch (e) { console.error('[catalog]', e); }
+  loadLanPanel();
   document.getElementById('settings-modal').classList.add('open');
 }
 
@@ -54,6 +60,14 @@ function saveSettings() {
   state.settings.apiKey = document.getElementById('set-apikey').value.trim();
   state.settings.cotTimeoutEnabled = document.getElementById('set-cot-timeout-enabled').checked;
   state.settings.cotTimeoutMinutes = parseInt(document.getElementById('set-cot-timeout-minutes').value) || 2;
+  // A cleared or nonsense field keeps the default rather than saving NaN or 0.
+  // 0 s between auto-continued posts is a real choice and is kept.
+  const acDelay = parseInt(document.getElementById('set-auto-continue-delay').value, 10);
+  state.settings.autoContinueDelaySeconds = (isFinite(acDelay) && acDelay >= 0) ? acDelay : DEFAULT_SETTINGS.autoContinueDelaySeconds;
+  const acMax = parseInt(document.getElementById('set-auto-continue-max').value, 10);
+  state.settings.autoContinueMaxChain = (isFinite(acMax) && acMax >= 1) ? acMax : DEFAULT_SETTINGS.autoContinueMaxChain;
+  const loreT = parseInt(document.getElementById('set-lore-timeout').value, 10);
+  state.settings.loreTimeoutSeconds = isFinite(loreT) ? Math.max(5, loreT) : DEFAULT_SETTINGS.loreTimeoutSeconds;
   state.settings.avatarScale = parseFloat(document.getElementById('set-avatar-scale').value) || 1;
   state.settings.allowRemoteImages = document.getElementById('set-allow-remote-images').checked;
   state.settings.streamReplies = document.getElementById('set-stream-replies').checked;
@@ -287,7 +301,8 @@ function createCard() {
     customCodeEnabled: false,
     contextLimit: 0,
     smartLimitEnabled: false,
-    smartLimitTokens: 300
+    smartLimitTokens: 300,
+    thinkingEnabled: true
   };
   state.characterCards.push(card);
   saveState();
@@ -378,6 +393,9 @@ function editCard(id) {
   document.getElementById('card-context-limit').value = card.contextLimit || 0;
   document.getElementById('card-smart-limit-tokens').value = card.smartLimitTokens || 300;
   document.getElementById('card-smart-limit-enabled').checked = !!card.smartLimitEnabled;
+  // `!== false`: a card with no field (older, or imported) thinks, as it always did.
+  document.getElementById('card-thinking-enabled').checked = (card.thinkingEnabled !== false);
+  loadCardBudgetFields(card);
   updateCardCtxHint();
   document.getElementById('card-custom-code').value = card.customCode || '';
   document.getElementById('card-code-enabled').checked = !!card.customCodeEnabled;
@@ -395,9 +413,12 @@ function saveCard() {
   const card = state.characterCards.find(c => c.id === editingCardId);
   if (!card) return;
   card.contextLimit = Math.max(0, parseInt(document.getElementById('card-context-limit').value, 10) || 0);
-  card.smartLimitTokens = Math.min(8192, Math.max(25,
-    parseInt(document.getElementById('card-smart-limit-tokens').value, 10) || 300));
+  // Floor only -- the 8192 ceiling is gone; see resolveSmartLimit().
+  card.smartLimitTokens = Math.max(25,
+    parseInt(document.getElementById('card-smart-limit-tokens').value, 10) || 300);
   card.smartLimitEnabled = document.getElementById('card-smart-limit-enabled').checked;
+  card.thinkingEnabled = document.getElementById('card-thinking-enabled').checked;
+  Object.assign(card, readCardBudgetFields());
   card.customCode = document.getElementById('card-custom-code').value;
   card.customCodeEnabled = document.getElementById('card-code-enabled').checked;
   card.name = document.getElementById('card-name').value.trim() || 'Unnamed';
@@ -571,7 +592,72 @@ function updateCardCtxHint() {
     msg += ' (clamped from ' + raw.toLocaleString() + ' \u2014 the model tops out at '
          + ceiling.toLocaleString() + ')';
   }
-  el.textContent = msg + '. 90% is the input budget; the rest is reply headroom.';
+  // The input share is the character's own since 1.7.7 #6d -- read live from
+  // the fields, so the sentence changes as the number is typed.
+  const inputPct = resolveContextBudget(liveBudgetCard(card)).percent.contextInputPercent;
+  el.textContent = msg + '. ' + inputPct + '% is the input budget; the rest is reply headroom.';
+}
+
+/* ================================================================
+   CONTEXT BUDGET FIELDS (roadmap 1.7.7 #6d)
+
+   Four per-character percentages; see resolveContextBudget in js/04-state.js.
+   A blank field means "inherit", and its placeholder shows what that is right
+   now -- the setting, which gobbonet.toml's [ui] table can preset, else the old
+   constant -- so blank never reads as "nothing".
+================================================================ */
+const CARD_BUDGET_FIELDS = {
+  'card-ctx-input-pct': 'contextInputPercent',
+  'card-ctx-reply-pct': 'contextReplyPercent',
+  'card-ctx-land-pct':  'contextLandPercent',
+  'card-ctx-keep-pct':  'contextKeepPercent',
+};
+
+function loadCardBudgetFields(card) {
+  for (const [id, key] of Object.entries(CARD_BUDGET_FIELDS)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const v = card ? card[key] : null;
+    el.value = (v === null || v === undefined || v === '') ? '' : v;
+    el.placeholder = _contextPercent(null, key) + ' (default)';
+  }
+  updateCardBudgetHint();
+}
+
+/* The fields as card values: blank -> null (inherit); a number -> rounded and
+   held to that field's own range. Combinations are NOT adjusted here: the user's
+   number is stored as typed, and resolveContextBudget adjusts it at use and says
+   so in the hint. Storing a silently different number is what #6 removes. */
+function readCardBudgetFields() {
+  const out = {};
+  for (const [id, key] of Object.entries(CARD_BUDGET_FIELDS)) {
+    const el = document.getElementById(id);
+    const raw = el ? String(el.value).trim() : '';
+    const n = raw === '' ? NaN : Number(raw);
+    if (!isFinite(n)) { out[key] = null; continue; }
+    const r = CONTEXT_BUDGET_RANGES[key];
+    out[key] = Math.min(r.max, Math.max(r.min, Math.round(n)));
+  }
+  return out;
+}
+
+/* The card being edited, with whatever is in the four fields right now. */
+function liveBudgetCard(card) {
+  return Object.assign({}, card || {}, readCardBudgetFields());
+}
+
+function updateCardBudgetHint() {
+  const el = document.getElementById('card-budget-hint');
+  if (!el) return;
+  const card = state.characterCards.find(c => c.id === editingCardId);
+  const b = resolveContextBudget(liveBudgetCard(card));
+  const of = (f) => Math.round(b.input * f * 100);
+  let msg = 'Compression starts at ' + of(1 - b.reply) + '% of the context and brings the chat back to '
+          + of(b.land) + '%; the last ' + of(b.keep) + '% is kept word for word.';
+  if (b.notes.length) msg += ' Adjusted: ' + b.notes.join(' ');
+  el.textContent = msg;
+  // The context hint above names the input budget too; keep it in step.
+  try { updateCardCtxHint(); } catch (e) {}
 }
 
 /* ================================================================
@@ -745,5 +831,295 @@ async function applyStandDown() {
       : ''), data.persisted === false ? 'err' : 'ok');
   } catch (e) {
     _standDownStatus('Could not reach the server.', 'err');
+  }
+}
+
+/* ================================================================
+   PHONE & OTHER DEVICES PANEL (roadmap 1.7.7 #7)
+
+   The addresses a phone can use, and the address and port the server answers
+   on. A server setting like Idle Stand-Down, so it is read from /lan when
+   CONFIG opens and saved on its own button, never by SAVE.
+
+   It applies on the next start, not now: moving the socket under the page
+   that asked would cut that page off, and on a phone it is the one device
+   that then cannot find the new address. So the box shows the new address
+   BEFORE saving (updateLanPreview), including a warning when the address
+   this page is open at is about to stop working.
+================================================================ */
+let _lanInfo = null;
+
+function _lanStatus(msg, tone) {
+  const el = document.getElementById('lan-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  if (tone) el.dataset.tone = tone; else delete el.dataset.tone;
+}
+
+function _lanIsWildcard(h) { return h === '0.0.0.0' || h === '::' || h === ''; }
+function _lanIsLoopback(h) { return h === '127.0.0.1' || h === '::1' || h === 'localhost'; }
+function _lanUrl(host, port) {
+  return 'http://' + (String(host).includes(':') ? '[' + host + ']' : host) + ':' + port + '/';
+}
+/* The adapter's name, with the banner's warning for the kinds a phone is
+   rarely on (lanAddrNote in cmd/gobbonet/main.go). */
+function _lanAdapterLabel(a) {
+  const name = a.interface || 'Network';
+  if (a.kind === 'virtual adapter') return name + ' \u2014 virtual adapter, unlikely';
+  if (a.kind === 'VPN or tunnel') return name + ' \u2014 VPN or tunnel, unlikely';
+  return name;
+}
+
+function _lanSetEnabled(on) {
+  ['lan-host', 'lan-port', 'lan-save'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !on;
+  });
+}
+
+function _lanRenderAddresses(data) {
+  const list = document.getElementById('lan-addr-list');
+  if (!list) return;
+  const running = data && data.running;
+  const say = (msg) => { list.innerHTML = '<div class="form-hint" style="margin:0;">' + escapeHtml(msg) + '</div>'; };
+  if (!running) { say('The server did not say which address it is answering on.'); return; }
+  if (!running.lan_access) {
+    if (running.fell_back) {
+      say('Phones can\u2019t connect right now. GobboNet could not open its network address (' +
+          (running.bind_error || 'refused') + '), so it is answering on this PC only.');
+    } else {
+      say('Phones can\u2019t connect right now: GobboNet is set to answer on this PC only. ' +
+          'Choose Automatic below and save to let them in.');
+    }
+    return;
+  }
+  const addrs = Array.isArray(data.addresses) ? data.addresses : [];
+  if (!addrs.length) {
+    say('No Wi-Fi or Ethernet address was found on this PC. Check that it is connected to a network.');
+    return;
+  }
+  list.innerHTML = addrs.map(a =>
+    '<div class="about-build-row" style="flex-wrap:wrap;align-items:center;">' +
+      '<span>' + escapeHtml(_lanAdapterLabel(a)) + '</span>' +
+      '<b>' + escapeHtml(a.url) + '</b>' +
+      '<button class="btn btn-sm" type="button" data-url="' + escapeHtml(a.url) + '" onclick="copyLanAddress(this)">COPY</button>' +
+    '</div>').join('');
+}
+
+/* Automatic, every address this PC has, and this PC only. The values are what
+   listen_host will hold. A saved wildcard or loopback keeps its own spelling,
+   and a saved address that has since left this PC stays listed and selected,
+   so the box shows what the file says rather than pretending otherwise. */
+function _lanFillChoices(data) {
+  const sel = document.getElementById('lan-host');
+  if (!sel) return;
+  const saved = (data.saved && typeof data.saved.host === 'string') ? data.saved.host : '0.0.0.0';
+  const auto = _lanIsWildcard(saved) ? saved : '0.0.0.0';
+  const local = _lanIsLoopback(saved) ? saved : '127.0.0.1';
+  const opts = [{ v: auto, t: 'Automatic (all addresses)' }];
+  const choices = Array.isArray(data.choices) ? data.choices : [];
+  choices.forEach(c => opts.push({ v: c.ip, t: c.ip + ' \u2014 ' + _lanAdapterLabel(c) }));
+  if (!_lanIsWildcard(saved) && !_lanIsLoopback(saved) && !choices.some(c => c.ip === saved)) {
+    opts.push({ v: saved, t: saved + ' \u2014 no longer on this PC' });
+  }
+  opts.push({ v: local, t: 'This PC only (no phones)' });
+  sel.innerHTML = opts.map(o =>
+    '<option value="' + escapeHtml(o.v) + '">' + escapeHtml(o.t) + '</option>').join('');
+  sel.value = saved;
+}
+
+async function loadLanPanel() {
+  const group = document.getElementById('lan-group');
+  if (!group) return;
+  _lanInfo = null;
+  const list = document.getElementById('lan-addr-list');
+  const preview = document.getElementById('lan-preview');
+  if (preview) preview.textContent = '';
+  const disable = (why) => {
+    if (list) list.innerHTML = '';
+    _lanSetEnabled(false);
+    _lanStatus(why);
+  };
+
+  if (!IS_SERVED) {
+    disable('Opened from a file rather than the GobboNet server, so there are no network addresses to show.');
+    return;
+  }
+
+  // Same first question as Idle Stand-Down: which server is this?
+  let health = null;
+  try {
+    const hr = await fetch(window.location.origin + '/health-fileserver', { cache: 'no-store' });
+    if (hr.ok) health = await hr.json();
+  } catch (e) { /* handled with an unreachable /lan below */ }
+  if (health && (health.server === 'fileserver.ps1' || !health.version)) {
+    disable('GobboNet is being served by the older PowerShell file server (fileserver.ps1), which ' +
+            'can\u2019t show or change these here. Its window lists the addresses when it starts.');
+    return;
+  }
+
+  try {
+    const resp = await fetch(window.location.origin + '/lan', { cache: 'no-store' });
+    if (resp.status === 404) {
+      const was = (health && health.version) ? ' This one is ' + _sdRelease(health.version) + '.' : '';
+      disable('This version of the GobboNet program file does not have this setting; it arrived in 1.7.7.' +
+              was + ' Replace the gobbonet program file in your GobboNet folder with the one from the ' +
+              'download \u2014 the chat page is built into it, so that single file is the whole update.');
+      return;
+    }
+    if (!resp.ok) {
+      disable('The server could not read these settings (error ' + resp.status + ').');
+      return;
+    }
+    const data = await resp.json();
+    _lanInfo = data;
+    _lanRenderAddresses(data);
+    _lanFillChoices(data);
+    const port = document.getElementById('lan-port');
+    if (port) {
+      port.min = data.port_min || 1024;
+      port.max = data.port_max || 32767;
+      port.value = (data.saved && data.saved.port) || (data.running && data.running.port) || 9066;
+    }
+    _lanSetEnabled(true);
+    _lanStatus(_lanPendingNote(data), (data.env_overrides && data.env_overrides.length) ? 'err' : null);
+    updateLanPreview();
+  } catch (e) {
+    disable('Could not reach the server to read these settings.');
+  }
+}
+
+/* What is saved but not yet running, and anything that stops a save working. */
+function _lanPendingNote(data) {
+  const parts = [];
+  const s = data.saved, r = data.running;
+  if (s && r && (s.host !== r.host || s.port !== r.port)) {
+    parts.push('A saved change is waiting: it applies the next time GobboNet starts.');
+  }
+  if (data.env_overrides && data.env_overrides.length) {
+    parts.push(data.env_overrides.join(' and ') + (data.env_overrides.length > 1 ? ' are' : ' is') +
+               ' set on this PC, and wins over this setting until it is removed.');
+  }
+  return parts.join(' ');
+}
+
+/* The address phones and this PC will use after the next start, shown before
+   anything is saved. */
+function updateLanPreview() {
+  const el = document.getElementById('lan-preview');
+  const sel = document.getElementById('lan-host');
+  const input = document.getElementById('lan-port');
+  if (!el || !sel || !input || !_lanInfo) return;
+  const lo = _lanInfo.port_min || 1024, hi = _lanInfo.port_max || 32767;
+  const port = Number(input.value);
+  if (!Number.isInteger(port) || port < lo || port > hi) {
+    el.textContent = 'The port must be a whole number from ' + lo + ' to ' + hi + '.';
+    return;
+  }
+  const host = sel.value;
+  const running = _lanInfo.running || {};
+  if (host === running.host && port === running.port) { el.textContent = ''; return; }
+
+  const local = _lanUrl(host === '::' || host === '::1' ? '::1' : '127.0.0.1', port);
+  let phones;
+  if (_lanIsLoopback(host)) {
+    phones = 'phones can\u2019t connect';
+  } else if (_lanIsWildcard(host)) {
+    // 0.0.0.0 answers on IPv4 only, so an IPv6 address is no example of it.
+    const first = (_lanInfo.choices || []).find(c => host !== '0.0.0.0' || !String(c.ip).includes(':'));
+    phones = first ? 'phones use ' + _lanUrl(first.ip, port) + ' (or another address above)'
+                   : 'phones use this PC\u2019s network address with port ' + port;
+  } else {
+    phones = 'phones use ' + _lanUrl(host, port);
+  }
+  let msg = 'After the next start: ' + phones + '; this PC uses ' + local + '.';
+
+  // Is the address this page is open at about to stop working?
+  const here = window.location.hostname.replace(/^\[|\]$/g, '');
+  const herePort = Number(window.location.port || 80);
+  const keeps = port === herePort && (_lanIsLoopback(here) || _lanIsWildcard(host) || host === here);
+  if (!keeps) {
+    msg += (_lanIsLoopback(host) && !_lanIsLoopback(here))
+      ? ' This page is open on another device, which won\u2019t reach GobboNet after that.'
+      : ' The address this page is open at will stop working then \u2014 note the new one first.';
+  }
+  if (_lanInfo.os === 'windows' && port !== running.port) {
+    msg += ' On Windows, run GobboNet LAN Setup again after the restart, so the firewall lets phones in on the new port.';
+  }
+  el.textContent = msg;
+}
+
+async function saveLanSettings() {
+  const sel = document.getElementById('lan-host');
+  const input = document.getElementById('lan-port');
+  if (!sel || !input || !_lanInfo) return;
+  const port = Number(input.value);
+  const lo = _lanInfo.port_min || 1024, hi = _lanInfo.port_max || 32767;
+  if (!Number.isInteger(port) || port < lo || port > hi) {
+    _lanStatus('The port must be a whole number from ' + lo + ' to ' + hi + '.', 'err');
+    return;
+  }
+  try {
+    const resp = await fetch(window.location.origin + '/lan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: sel.value, port })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      _lanStatus(data.error || 'Could not save (error ' + resp.status + ').', 'err');
+      return;
+    }
+    _lanInfo.saved = data.saved || { host: sel.value, port };
+    if (data.env_overrides) _lanInfo.env_overrides = data.env_overrides;
+    const r = _lanInfo.running || {};
+    let msg = (_lanInfo.saved.host === r.host && _lanInfo.saved.port === r.port)
+      ? 'Saved. This is what GobboNet is using now, so nothing changes.'
+      : 'Saved. GobboNet uses this from its next start; until then nothing changes.';
+    let tone = 'ok';
+    if (data.env_overrides && data.env_overrides.length) {
+      msg += ' ' + _lanPendingNote({ env_overrides: data.env_overrides });
+      tone = 'err';
+    }
+    if (data.port_file_error) {
+      msg += ' The port could not be recorded for launch.bat (' + data.port_file_error +
+             '), so starting from launch.bat may put the old one back.';
+      tone = 'err';
+    }
+    _lanStatus(msg, tone);
+  } catch (e) {
+    _lanStatus('Could not reach the server.', 'err');
+  }
+}
+
+/* Same pattern as COPY BUILD INFO in ABOUT, including the fallback: a phone
+   reaches this over plain http, where navigator.clipboard is refused. */
+function copyLanAddress(btn) {
+  const text = (btn && btn.dataset && btn.dataset.url) || '';
+  const done = () => {
+    const original = btn.textContent;
+    btn.textContent = 'COPIED';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  };
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      done();
+    } catch (e) {
+      btn.textContent = 'COPY FAILED';
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else {
+    fallback();
   }
 }

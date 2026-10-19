@@ -78,7 +78,11 @@ mkdir -p "$DIST"
 # A build that skips this produces binaries with no chat page in them.
 # webui.Staged() reports that and the server refuses to serve, rather than
 # starting up and answering 404 for everything.
-./stage-web.sh
+#
+# Through bash, not ./ -- the executable bit does not survive a commit made
+# from Windows, and every script here had lost it. tests/test-build-scripts.py
+# holds every script-to-script call to this rule.
+bash ./stage-web.sh
 
 echo "building $VERSION with $($GO version)"
 echo

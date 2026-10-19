@@ -166,6 +166,7 @@ func Load(path string) (*Catalog, error) {
 			MinVRAM: atoiOr(kv["min_vram"], 0),
 			Ctx:     atoiOr(kv["ctx"], 0),
 			KV:      kv["kv"],
+			Tags:    parseTags(kv["tags"]),
 		}
 		if v, err := strconv.ParseFloat(kv["size_gb"], 64); err == nil {
 			e.SizeGB = v

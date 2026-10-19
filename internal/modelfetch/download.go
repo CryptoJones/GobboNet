@@ -13,16 +13,21 @@
 package modelfetch
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ElodineOfficial/GobboNet/internal/catalog"
 )
@@ -40,6 +45,9 @@ type Status struct {
 	Done    int64   `json:"done"`
 	Total   int64   `json:"total"`
 	Message string  `json:"message"`
+	// Stage is the step running, or the step that failed (see diagnose.go).
+	// Added in 1.7.7 so a failure report says where it stopped.
+	Stage string `json:"stage,omitempty"`
 }
 
 // Download is one model transfer in flight.
@@ -82,6 +90,7 @@ func RequireChecksum(on bool) Option {
 func New(e catalog.Entry, dir string, opts ...Option) *Download {
 	d := &Download{entry: e, dir: dir, st: Status{
 		State: "running", Display: e.Display, Total: int64(e.SizeGB * float64(1<<30)),
+		Stage: StageFolder,
 	}}
 	for _, opt := range opts {
 		opt(d)
@@ -108,6 +117,46 @@ func (d *Download) set(f func(*Status)) {
 
 func (d *Download) fail(msg string) {
 	d.set(func(s *Status) { s.State = "error"; s.Message = msg })
+	logf("%s: FAILED at %s: %s", d.entry.File, d.Status().Stage, msg)
+}
+
+func (d *Download) stage(st string) {
+	d.set(func(s *Status) { s.Stage = st })
+}
+
+// client is what both requests go through. http.Get used the default client,
+// which has no timeouts at all: a connection that went quiet left the download
+// "running" forever, at whatever percentage it had reached, with nothing to
+// report. These bound the parts that should be quick; the body itself is
+// bounded by stallTimeout instead, since a 20 GB transfer is meant to be long.
+var client = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ForceAttemptHTTP2:     true,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
+
+// stallTimeout is how long the body may send nothing before the download is
+// given up as stalled.
+var stallTimeout = 2 * time.Minute
+
+// stallReader cancels the request when no bytes arrive for stallTimeout. The
+// read then fails, and Run reports a stall rather than hanging.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (s stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(stallTimeout)
+	}
+	return n, err
 }
 
 var lfsOID = regexp.MustCompile(`(?m)^oid\s+sha256:([0-9a-fA-F]{64})\s*$`)
@@ -167,12 +216,20 @@ func (d *Download) crossCheck(pointer string) (sum, source string, err error) {
 // not an error, carrying over launch.bat's policy verbatim: an upstream format
 // change should not block a good download.
 func (d *Download) pointerSum() string {
-	resp, err := http.Get(d.pointerURL())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.pointerURL(), nil)
 	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logf("%s: checksum pointer unreachable (%v); the size check will be used", d.entry.File, err)
 		return ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logf("%s: checksum pointer answered %s; the size check will be used", d.entry.File, resp.Status)
 		return ""
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
@@ -202,12 +259,19 @@ func (d *Download) pointerURL() string {
 
 // Run performs the download. It blocks; call it in a goroutine and poll Status.
 func (d *Download) Run() {
-	if err := os.MkdirAll(d.dir, 0o700); err != nil {
-		d.fail("Could not create the models folder: " + err.Error())
-		return
-	}
 	final := filepath.Join(d.dir, d.entry.File)
 	part := final + ".part"
+	logf("%s: starting %s into %s", d.entry.File, d.entry.Display, d.dir)
+
+	// Every file operation the download will need, tried first with a few
+	// bytes. See checkFolder.
+	d.stage(StageFolder)
+	if err := checkFolder(d.dir); err != nil {
+		d.fail(err.Error())
+		return
+	}
+	logf("%s: models folder is writable", d.entry.File)
+	d.stage(StageChecksum)
 
 	// Work out the expected checksum before a byte is written, so a mismatch is
 	// caught the moment the bytes are on disk rather than at first load.
@@ -237,39 +301,73 @@ func (d *Download) Run() {
 		return
 	}
 
-	resp, err := http.Get(d.downloadURL())
+	if want == "" {
+		logf("%s: no published checksum; the size check will be used", d.entry.File)
+	} else {
+		logf("%s: expecting sha256 %s (%s)", d.entry.File, want, verifiedBy)
+	}
+
+	d.stage(StageConnect)
+	src := d.downloadURL()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
 		d.fail("Download failed: " + err.Error())
 		return
 	}
+	resp, err := client.Do(req)
+	if err != nil {
+		d.fail(explainNetErr(hostOf(src), err))
+		return
+	}
 	defer resp.Body.Close()
+	logf("%s: %s answered %s (%d bytes)", d.entry.File, hostOf(resp.Request.URL.String()), resp.Status, resp.ContentLength)
 	if resp.StatusCode != http.StatusOK {
-		d.fail(fmt.Sprintf("Download failed: the server answered %s.", resp.Status))
+		d.fail(explainHTTPStatus(resp.StatusCode, resp.Status, d.entry.File))
 		return
 	}
 	if resp.ContentLength > 0 {
 		d.set(func(s *Status) { s.Total = resp.ContentLength })
 	}
 
+	d.stage(StageDownload)
 	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		d.fail("Could not write to the models folder: " + err.Error())
+		d.fail(explainFileErr("write the model", d.dir, err))
 		return
 	}
 
+	var stalled atomic.Bool
+	timer := time.AfterFunc(stallTimeout, func() { stalled.Store(true); cancel() })
+	defer timer.Stop()
+	body := stallReader{r: resp.Body, timer: timer}
+
 	sum := sha256.New()
-	written, err := io.Copy(io.MultiWriter(f, sum, progressWriter{d}), resp.Body)
+	written, err := io.Copy(io.MultiWriter(fileWriter{f}, sum, progressWriter{d}), body)
 	closeErr := f.Close()
 	if err != nil {
 		os.Remove(part)
-		d.fail("Download interrupted: " + err.Error())
+		var we writeErr
+		switch {
+		case errors.As(err, &we):
+			d.fail(explainFileErr("write the model", d.dir, we.err))
+		case stalled.Load():
+			d.fail(fmt.Sprintf("The download stopped: nothing arrived for %s, at %.1f GB. "+
+				"The connection may have dropped. Try again.", stallTimeout, float64(written)/(1<<30)))
+		default:
+			d.fail(fmt.Sprintf("The download was cut off at %.1f GB. %s",
+				float64(written)/(1<<30), explainNetErr(hostOf(src), err)))
+		}
 		return
 	}
 	if closeErr != nil {
 		os.Remove(part)
-		d.fail("Could not finish writing the file: " + closeErr.Error())
+		d.fail(explainFileErr("finish writing the model", d.dir, closeErr))
 		return
 	}
+	logf("%s: wrote %d bytes to %s", d.entry.File, written, filepath.Base(part))
+	d.stage(StageVerify)
 
 	if want != "" {
 		got := hex.EncodeToString(sum.Sum(nil))
@@ -298,14 +396,17 @@ func (d *Download) Run() {
 		return
 	}
 
-	if err := os.Rename(part, final); err != nil {
+	d.stage(StageMove)
+	if err := moveIntoPlace(part, final); err != nil {
 		os.Remove(part)
-		d.fail("Could not move the model into place: " + err.Error())
+		d.fail(explainFileErr("move the model into place", d.dir, err))
 		return
 	}
+	logf("%s: done, %s", d.entry.File, final)
 
 	d.set(func(s *Status) {
 		s.State = "done"
+		s.Stage = StageDone
 		s.Percent = 100
 		s.Done = written
 		if want == "" {
@@ -314,6 +415,24 @@ func (d *Download) Run() {
 			s.Message = "Downloaded and checksum verified."
 		}
 	})
+}
+
+// fileWriter marks errors from the disk, so a failed write is explained as a
+// disk problem rather than as a dropped connection -- io.Copy returns either
+// kind through the same error.
+type fileWriter struct{ f *os.File }
+
+type writeErr struct{ err error }
+
+func (e writeErr) Error() string { return e.err.Error() }
+func (e writeErr) Unwrap() error { return e.err }
+
+func (w fileWriter) Write(b []byte) (int, error) {
+	n, err := w.f.Write(b)
+	if err != nil {
+		return n, writeErr{err}
+	}
+	return n, nil
 }
 
 type progressWriter struct{ d *Download }

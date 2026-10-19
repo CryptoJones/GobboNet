@@ -321,6 +321,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/perf":
 		s.handlePerf(w, r)
 
+	// CONFIG's "Phone & Other Devices": the addresses phones can use, and the
+	// listen address and port for the next start. See lan.go.
+	case path == "/lan":
+		s.handleLAN(w, r)
+
 	case path == "/standdown":
 		s.handleStandDown(w, r)
 
@@ -676,12 +681,55 @@ type Bind struct {
 	// rather than a paraphrase of it.
 	FellBack bool
 	WideErr  error
+
+	// Loopback is the loopback address also being served when Host names one
+	// specific network address ("127.0.0.1" beside "192.168.1.20"), and empty
+	// otherwise. LoopbackErr is why it could not be, when it could not.
+	//
+	// Roadmap 1.7.7 #7 lets a user pin the address their phone connects to.
+	// A single listener on that address would quietly stop 127.0.0.1 working
+	// on the PC itself -- and 127.0.0.1 is what the launchers open, what the
+	// desktop shortcut's browser tab is on, and what the Linux launcher probes
+	// to decide whether GobboNet is already running. So pinning narrows what
+	// the NETWORK can reach, and never what this machine can.
+	Loopback    string
+	LoopbackErr error
 }
 
 // LANReachable reports whether the bound address is one another device can
 // reach. Loopback is not, whether it was configured or fallen back to.
 func (b *Bind) LANReachable() bool {
 	return !isLoopbackHost(b.Host)
+}
+
+// LocalHost is the address a browser on this machine should use: loopback
+// whenever loopback is being served, which is every case except a pinned
+// address whose loopback companion could not be bound.
+func (b *Bind) LocalHost() string {
+	switch {
+	case b.Loopback != "":
+		return b.Loopback
+	case b.Host == "" || b.Host == "0.0.0.0":
+		return "127.0.0.1"
+	case b.Host == "::" || b.Host == "[::]":
+		return "::1"
+	}
+	return b.Host
+}
+
+// LocalURL is LocalHost as something to open in a browser.
+func (b *Bind) LocalURL() string {
+	return (LANAddr{IP: b.LocalHost()}).URL(b.Port)
+}
+
+// pinnedHost reports whether host names one specific network address -- not a
+// wildcard, which already includes loopback, and not loopback itself.
+func pinnedHost(host string) bool {
+	if isLoopbackHost(host) {
+		return false
+	}
+	v4, v6 := familiesFor(host)
+	return !v4 && !v6
 }
 
 // Listen binds the configured address without serving.
@@ -707,7 +755,20 @@ func (s *Server) Listen() (*Bind, error) {
 	port := s.cfg.ListenPort
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
 	if err == nil {
-		return &Bind{Listener: ln, Host: host, Port: port}, nil
+		b := &Bind{Listener: ln, Host: host, Port: port}
+		if pinnedHost(host) {
+			// Best effort. Something else holding loopback on this port is
+			// odd but not fatal: the pinned address -- the one the user asked
+			// for -- is bound, and the banner says which address to use here.
+			lb := loopbackFor(host)
+			if lln, lerr := net.Listen("tcp", net.JoinHostPort(lb, fmt.Sprintf("%d", port))); lerr == nil {
+				b.Listener = joinListeners(ln, lln)
+				b.Loopback = lb
+			} else {
+				b.LoopbackErr = lerr
+			}
+		}
+		return b, nil
 	}
 
 	// Already loopback, or a failure loopback would hit too: report it as it

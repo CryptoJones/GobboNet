@@ -176,6 +176,25 @@
       </div>
     </div>
 
+    <!-- Roadmap 1.7.7 #6b. Were AUTO_CONTINUE_DELAY_MS / _MAX_CHAIN in
+         js/09-threads.js; the defaults are those values. Box copied from Reply
+         Delivery above; the number rows from Infinite Runtime Bug Fix below. -->
+    <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid rgba(0,243,255,0.18); border-radius:var(--radius); background:rgba(0,243,255,0.02);">
+      <label>&#8635; Auto-Continue</label>
+      <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">Put {{auto_continue_N}} in a message and the model keeps going on its own for N posts in total, with a countdown above the input between them. Stop, sending something yourself, or switching thread ends it early. Set how long it waits between posts, and the most posts one chain may run.</div>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:12px;color:rgba(255,255,255,0.5);">Wait between posts:</span>
+          <input type="number" id="set-auto-continue-delay" min="0" step="1" value="20" style="width:62px;text-align:center;font-size:13px;">
+          <span style="font-size:12px;color:rgba(255,255,255,0.5);">s</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:12px;color:rgba(255,255,255,0.5);">Most posts per chain:</span>
+          <input type="number" id="set-auto-continue-max" min="1" step="1" value="50" style="width:62px;text-align:center;font-size:13px;">
+        </div>
+      </div>
+    </div>
+
     <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid rgba(0,243,255,0.18); border-radius:var(--radius); background:rgba(0,243,255,0.02);">
       <label>&#9906; Character Editor</label>
       <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">The CAST window normally ignores a single click on the backdrop while you have a character open, so a stray click can't throw away what you were writing. Double-click to leave, or use CANCEL / SAVE. Turn this off and it closes on one click like every other window. Either way, you'll still be asked before unsaved edits are discarded.</div>
@@ -195,7 +214,12 @@
 
     <div class="form-group">
       <label for="set-apikey">Search API Key (web search)</label>
-      <input type="password" id="set-apikey" placeholder="Get a free key at ollama.com/settings/keys">
+      <!-- autocomplete="new-password": this is an API key, not a sign-in.
+           Without it Chrome's password manager counted this field as the
+           page's login password, filled the GobboNet password into it on
+           load, and the saved username into the conversation search. "off"
+           does not stop that -- Chrome ignores it on password fields. -->
+      <input type="password" id="set-apikey" autocomplete="new-password" placeholder="Get a free key at ollama.com/settings/keys">
       <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
         <button class="btn btn-sm" type="button" onclick="testSearchConnection()">Test Connection</button>
         <span id="search-test-status" style="font-size:12px;color:var(--cyan-dim);"></span>
@@ -245,6 +269,38 @@
       </div>
     </div>
 
+    <!-- Roadmap 1.7.7 #7. A server setting, so it works like Idle Stand-Down:
+         filled from the server when CONFIG opens, saved on its own button, its
+         result in a status line. Box copied from Idle Stand-Down; the address
+         rows are ABOUT's build rows with its COPY button; the address/port pair
+         and the button row are Performance's. -->
+    <div class="form-group" id="lan-group" style="margin-top:12px; padding:12px; border:1px solid rgba(0,243,255,0.18); border-radius:var(--radius); background:rgba(0,243,255,0.02);">
+      <label>&#128241; Phone &amp; Other Devices</label>
+      <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">To use GobboNet on your phone, or another computer on the same network, type one of these into its browser. Each is named after the network connection it belongs to &mdash; pick the one your phone is on. The first is the most likely.</div>
+      <div class="about-build-rows" id="lan-addr-list"></div>
+      <div class="form-hint" id="lan-addr-note" style="margin-top:10px;">These numbers come from your router, and can change when the PC or the router restarts. If yours keeps changing, give this PC a fixed address in the router's settings (often called a &ldquo;DHCP reservation&rdquo;) &mdash; GobboNet can choose between the PC's addresses, but only the router can make one permanent.</div>
+
+      <div class="form-row" style="margin-top:12px;">
+        <div class="form-group">
+          <label for="lan-host">Answer on</label>
+          <select id="lan-host" onchange="updateLanPreview()"></select>
+          <div class="form-hint">Automatic answers on every address above. Pick one to answer only there. This PC keeps working either way.</div>
+        </div>
+        <div class="form-group">
+          <label for="lan-port">Port</label>
+          <input type="number" id="lan-port" min="1024" max="32767" step="1" oninput="updateLanPreview()">
+          <div class="form-hint">The number after the colon. Change it only if another program needs 9066.</div>
+        </div>
+      </div>
+
+      <div class="form-hint" id="lan-preview"></div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn btn-sm" id="lan-save" onclick="saveLanSettings()">SAVE FOR NEXT START</button>
+      </div>
+      <div class="standdown-status" id="lan-status"></div>
+    </div>
+
     <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid var(--green-dim); border-radius:var(--radius); background:rgba(0,255,65,0.03);">
       <label>&#127760; Remote Images In Cards</label>
       <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">Character avatars and backgrounds can point at a web address instead of holding the picture themselves. Loading one contacts that server, which tells it your IP address &mdash; the only thing in GobboNet that reaches outside your machine without you asking. Off by default. Pictures pasted or uploaded directly are unaffected and always work.</div>
@@ -256,7 +312,7 @@
 
     <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid rgba(255,165,0,0.25); border-radius:var(--radius); background:rgba(255,165,0,0.03);">
       <label style="color:var(--amber,#ffaa00);">&#9201; Infinite Runtime Bug Fix</label>
-      <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">If COT (chain-of-thought) hangs forever, this auto-stops generation once it exceeds your expected runtime. Set to whatever feels right — if it hasn't finished by then, something's stuck.</div>
+      <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">If COT (chain-of-thought) hangs forever, this auto-stops generation once it exceeds your expected runtime. Set to whatever feels right — if it hasn't finished by then, something's stuck. This is the only time limit on a reply: there is no fixed cut-off behind it, and it still applies if you close this page or your phone goes to sleep.</div>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:rgba(255,255,255,0.75);">
           <input type="checkbox" id="set-cot-timeout-enabled" style="accent-color:var(--amber,#ffaa00);width:15px;height:15px;cursor:pointer;" onchange="updateCotTimeoutRow()">
@@ -270,13 +326,26 @@
       </div>
     </div>
 
+    <!-- Roadmap 1.7.7 #6c. Was LORE_TIMEOUT_MS in js/07-prompt.js; 45 s is
+         still the default. Box copied from Reply Delivery; the number row from
+         Infinite Runtime Bug Fix above. -->
+    <div class="form-group" style="margin-top:12px; padding:12px; border:1px solid rgba(0,243,255,0.18); border-radius:var(--radius); background:rgba(0,243,255,0.02);">
+      <label>&#128221; Lore Compression</label>
+      <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">When a chat outgrows the model's context, the oldest messages are summarised into the lore log before your message is sent. If that takes longer than this, it is cancelled so your message can go through &mdash; and those oldest messages leave the context without a summary. Slow or CPU-only computers may need longer.</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:12px;color:rgba(255,255,255,0.5);">Give up after:</span>
+        <input type="number" id="set-lore-timeout" min="5" step="5" value="45" style="width:62px;text-align:center;font-size:13px;">
+        <span style="font-size:12px;color:rgba(255,255,255,0.5);">s</span>
+      </div>
+    </div>
+
     <!-- Sits directly above Privacy Status, which stays last. This is a button,
          not a setting: openSettings() does not populate it and saveSettings()
          does not read it.
-         The download path is known-bugged and held off pending a fix patch --
-         applyModelCatalogAvailability() in js/02-model.js disables the button
-         and writes the reason into #add-model-unavailable. The hint below is
-         written in the future tense to match. -->
+         Held off from 1.7 to 1.7.7 as known-bugged; live again for testing
+         (roadmap 1.7.7 #8b). While it is not confirmed working,
+         applyModelCatalogAvailability() in js/02-model.js says so in
+         #add-model-unavailable under the button. -->
     <div class="form-group" id="add-model-block" style="margin-top:12px; padding:12px; border:1px solid rgba(0,243,255,0.18); border-radius:var(--radius); background:rgba(0,243,255,0.02);">
       <label>&#128229; Add a Model</label>
       <div class="form-hint" style="margin-top:2px;margin-bottom:10px;">
@@ -344,6 +413,28 @@
     </div>
 
     <div class="form-hint" id="model-catalog-free" style="margin-bottom:10px;"></div>
+
+    <!-- Roadmap 1.7.7: narrow the list by what a model is for and how much it
+         needs. Performance's row of btn btn-sm buttons, the chosen one filled
+         the way SAVE & RESTART MODEL is; the "Type:" / "Size:" labels are
+         Auto-Continue's inline ones. Shown once a list has loaded, painted by
+         paintCatalogFilters() in js/02-model.js. -->
+    <div id="model-catalog-filters" style="display:none;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <span style="font-size:12px;color:rgba(255,255,255,0.5);min-width:38px;">Type:</span>
+        <button class="btn btn-sm" type="button" data-kind="type" data-value="all" onclick="setCatalogFilter('type','all')">ALL MODELS</button>
+        <button class="btn btn-sm" type="button" data-kind="type" data-value="coding" onclick="setCatalogFilter('type','coding')">CODING</button>
+        <button class="btn btn-sm" type="button" data-kind="type" data-value="roleplay" onclick="setCatalogFilter('type','roleplay')">ROLEPLAY</button>
+        <button class="btn btn-sm" type="button" data-kind="type" data-value="jack-of-all-trades" onclick="setCatalogFilter('type','jack-of-all-trades')">JACK OF ALL TRADES</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:rgba(255,255,255,0.5);min-width:38px;">Size:</span>
+        <button class="btn btn-sm" type="button" data-kind="size" data-value="any" onclick="setCatalogFilter('size','any')">ANY SIZE</button>
+        <button class="btn btn-sm" type="button" data-kind="size" data-value="light" onclick="setCatalogFilter('size','light')" title="Needs 8 GB of GPU memory or less">LIGHT</button>
+        <button class="btn btn-sm" type="button" data-kind="size" data-value="medium" onclick="setCatalogFilter('size','medium')" title="Needs 9 to 16 GB of GPU memory">MEDIUM</button>
+        <button class="btn btn-sm" type="button" data-kind="size" data-value="heavy" onclick="setCatalogFilter('size','heavy')" title="Needs more than 16 GB of GPU memory">HEAVY</button>
+      </div>
+    </div>
 
     <!-- LIST VIEW -->
     <div id="model-catalog-list"></div>
@@ -612,7 +703,7 @@ gobbo.every(5, async () =&gt; {
           </div>
           <div class="form-group">
             <label for="card-smart-limit-tokens">Reply cap (tokens)</label>
-            <input type="number" id="card-smart-limit-tokens" min="25" max="8192" step="25" value="300">
+            <input type="number" id="card-smart-limit-tokens" min="25" step="25" value="300">
             <div class="form-hint">Only applies when the cap below is on. Cuts at a sentence end, not mid-word.</div>
           </div>
         </div>
@@ -621,6 +712,47 @@ gobbo.every(5, async () =&gt; {
           <input type="checkbox" id="card-smart-limit-enabled">
           <span>Cap this character's reply length</span>
         </label>
+
+        <!-- Roadmap 1.7.7 #9. Built exactly like the reply-cap row above. On by
+             default; off sends chat_template_kwargs.enable_thinking = false
+             (getCardThinkingParams in js/06-state-sync.js). -->
+        <label class="code-enable-row" style="margin-top:4px;">
+          <input type="checkbox" id="card-thinking-enabled">
+          <span>Let this character think (if the model supports switching it off)</span>
+        </label>
+        <div class="form-hint">Off asks the model to answer straight away, without its reasoning step. Models built to always reason, such as DeepSeek-R1 or gpt-oss, may think anyway.</div>
+
+        <!-- Roadmap 1.7.7 #6d. The same form-row / form-group / label / input /
+             form-hint layout as the two fields at the top of this box. Blank =
+             use the default (the placeholder shows it); see
+             resolveContextBudget in js/04-state.js for what each does and how
+             bad combinations are adjusted. -->
+        <div class="form-hint" style="margin-top:12px;margin-bottom:8px;">How this character spends its context, and when older messages are compressed into lore. Leave a field blank to use the default shown in it.</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="card-ctx-input-pct">Input budget (% of context)</label>
+            <input type="number" id="card-ctx-input-pct" min="10" max="99" step="1" oninput="updateCardBudgetHint()">
+            <div class="form-hint">How much of the context the prompt may fill. The rest is always free for the reply.</div>
+          </div>
+          <div class="form-group">
+            <label for="card-ctx-reply-pct">Reply room (% of input budget)</label>
+            <input type="number" id="card-ctx-reply-pct" min="0" max="60" step="1" oninput="updateCardBudgetHint()">
+            <div class="form-hint">Compression starts when less than this is left for the reply.</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="card-ctx-land-pct">Land at (% of input budget)</label>
+            <input type="number" id="card-ctx-land-pct" min="10" max="95" step="1" oninput="updateCardBudgetHint()">
+            <div class="form-hint">Where compression brings the chat back down to. Lower means bigger, rarer passes.</div>
+          </div>
+          <div class="form-group">
+            <label for="card-ctx-keep-pct">Keep verbatim (% of input budget)</label>
+            <input type="number" id="card-ctx-keep-pct" min="0" max="90" step="1" oninput="updateCardBudgetHint()">
+            <div class="form-hint">The most recent turns are never summarised, up to this much.</div>
+          </div>
+        </div>
+        <div class="form-hint" id="card-budget-hint"></div>
       </div>
 
         <label style="color:var(--green-neon); margin-bottom:8px; display:block;">&#9881; Sampler Parameters</label>
@@ -958,14 +1090,23 @@ gobbo.every(5, async () =&gt; {
       If this install encrypts its history, your password is also what unlocks
       it, which is why it is needed again after every restart.
     </div>
-    <div class="form-group">
-      <input type="password" id="unlock-password" autocomplete="current-password"
-             placeholder="Password" onkeydown="if(event.key==='Enter')submitUnlock();">
-    </div>
-    <div id="unlock-error" class="form-hint" style="display:none;color:var(--red-neon);margin-top:10px;"></div>
-    <div class="modal-actions">
-      <button class="btn btn-fill" id="unlock-submit" onclick="submitUnlock()">Unlock</button>
-    </div>
+    <!-- Its own <form>, and the only one on the page, so a browser's password
+         manager sees the sign-in as exactly this: one password field and its
+         button. Without it the page was one big formless "login form", and
+         Chrome filled the saved username into the first text box it found --
+         the conversation search -- on every load, which ran a search for it.
+         Submitting is stopped here and done by submitUnlock(), as before;
+         Enter still submits, now through the form. -->
+    <form id="unlock-form" onsubmit="event.preventDefault();submitUnlock();">
+      <div class="form-group">
+        <input type="password" id="unlock-password" name="password" autocomplete="current-password"
+               placeholder="Password">
+      </div>
+      <div id="unlock-error" class="form-hint" style="display:none;color:var(--red-neon);margin-top:10px;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-fill" id="unlock-submit" type="submit">Unlock</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1166,6 +1307,34 @@ gobbo.every(5, async () =&gt; {
         <div style="padding:10px 12px;border:1px solid rgba(255,255,255,0.06);border-radius:var(--radius);background:rgba(255,255,255,0.02);">
           <div style="color:rgba(255,255,255,0.4);font-size:11px;font-weight:700;letter-spacing:1px;margin-bottom:6px;">&#128465; YOUR DATA</div>
           <div style="color:rgba(255,255,255,0.4);line-height:1.6;font-size:12px;">Chats live in two places: this browser's storage for the address you opened, and a state file in the install folder. Uninstalling removes the state file. The browser copy is the browser's &mdash; clear it from site settings for the address you use, and do it for each one, since a phone on your LAN keeps its own.</div>
+        </div>
+
+        <!-- Links out. Roadmap 1.7.7 item #3.
+
+             The box is a copy of YOUR DATA above. The buttons are <button>, not
+             <a>: .btn does not reset text-decoration, so a link would come out
+             underlined and stop matching every other button in the app. Row
+             spacing is .modal-actions' 12px gap; the margin above it is
+             #about-copy-btn's 12px.
+
+             Nothing here touches the network until it is clicked, which is
+             the promise PRIVATE BY DESIGN makes above. openAboutLink() opens
+             a new tab with noopener, so the page it opens cannot reach back
+             into this one.
+
+             CHECK FOR UPDATES is a placeholder and does nothing. It is
+             disabled exactly the way Add a Model's NOT WORKING YET is, with the
+             reason written underneath. When the real check is built it must be
+             user-triggered or opt-in, or the privacy box has to change. -->
+        <div style="padding:10px 12px;border:1px solid rgba(255,255,255,0.06);border-radius:var(--radius);background:rgba(255,255,255,0.02);">
+          <div style="color:rgba(255,255,255,0.4);font-size:11px;font-weight:700;letter-spacing:1px;margin-bottom:6px;">&#128279; LINKS</div>
+          <div style="color:rgba(255,255,255,0.4);line-height:1.6;font-size:12px;">Mods, extras and the community live outside the app. Each opens in a new tab, and nothing is contacted until you click it.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;">
+            <button class="btn btn-sm" type="button" id="about-mods-btn" onclick="openAboutLink('https://goblincorps.com/gobbonet_extras')" title="goblincorps.com/gobbonet_extras">MODS</button>
+            <button class="btn btn-sm" type="button" id="about-discord-btn" onclick="openAboutLink('https://discord.gg/rcmN8uEbaa')" title="discord.gg/rcmN8uEbaa">DISCORD</button>
+            <button class="btn btn-sm" type="button" id="about-update-btn" disabled title="Coming in a later version">CHECK FOR UPDATES</button>
+          </div>
+          <div style="color:rgba(255,255,255,0.4);line-height:1.6;font-size:12px;margin-top:8px;">Update checks are coming in a later version. New releases are announced in the Discord.</div>
         </div>
 
       </div>

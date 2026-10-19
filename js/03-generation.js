@@ -375,8 +375,14 @@ function makeStreamFeeder(assistantMsg, thread) {
  */
 async function startGenerationJob(thread, requestBody) {
   if (jobsAvailable === false) return null;
+  // The user's runtime limit rides along so the server enforces it too, and it
+  // still holds once this tab is closed (roadmap 1.7.7 #4). Off sends nothing,
+  // and a job with no limit has none. A server older than 1.7.7 ignores the
+  // parameter and keeps its fixed 30 minutes.
+  const limitMin = (typeof cotTimeoutLimitMinutes === 'function') ? cotTimeoutLimitMinutes() : 0;
+  const limitQS = limitMin > 0 ? `&max_runtime_s=${limitMin * 60}` : '';
   try {
-    const r = await privacyFetch(`${JOBS_URL}?thread=${encodeURIComponent(thread.id)}`, {
+    const r = await privacyFetch(`${JOBS_URL}?thread=${encodeURIComponent(thread.id)}${limitQS}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody)

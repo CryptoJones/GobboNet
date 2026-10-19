@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,31 @@ func TestUninstallRemovesEveryConversationFileAndKeepsModels(t *testing.T) {
 	for _, name := range kept {
 		if _, err := os.Stat(filepath.Join(dataDir, name)); err != nil {
 			t.Errorf("removed something it must keep: %s", name)
+		}
+	}
+}
+
+// The closing line names whatever removes the program files: dnf for the
+// .rpm, apt for the .deb, Windows' own uninstaller there, and the folder itself
+// for a ZIP. It named apt on every non-Windows system until 1.7.7, Fedora
+// included (CHANGELOG-1.7.6-fedora-rpm.md, "Still outstanding").
+func TestRemoveHintFollowsTheInstall(t *testing.T) {
+	cases := []struct {
+		goos, exe, want, wantNot string
+	}{
+		{"linux", "/usr/lib64/gobbonet/gobbonet", "sudo dnf remove gobbonet", "apt"},
+		{"linux", "/usr/lib/gobbonet/gobbonet", "sudo apt remove gobbonet", "dnf"},
+		{"windows", `C:\Users\a\AppData\Local\GobboNet\gobbonet.exe`, "Settings > Apps > GobboNet > Uninstall", "sudo"},
+		{"linux", "/home/a/Downloads/GobboNet/linux-amd64/gobbonet", "/home/a/Downloads/GobboNet/linux-amd64", "sudo"},
+		{"linux", "", "delete the folder you unpacked GobboNet into", "sudo"},
+		// Prefixes, not substrings: a ZIP unpacked somewhere whose path merely
+		// contains the packaged directory's name is still a ZIP.
+		{"linux", "/home/a/usr/lib64/gobbonet/gobbonet", "delete the folder", "sudo"},
+	}
+	for _, c := range cases {
+		got := strings.Join(removeHint(c.goos, c.exe), "\n")
+		if !strings.Contains(got, c.want) || strings.Contains(got, c.wantNot) {
+			t.Errorf("removeHint(%q, %q) =\n%s\nwant it to contain %q and not %q", c.goos, c.exe, got, c.want, c.wantNot)
 		}
 	}
 }

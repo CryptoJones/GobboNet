@@ -174,7 +174,7 @@ async function sendMessage(overrideContent) {
   console.log('[gen] family=' + ((activeModel && activeModel.family) || 'unknown') +
               ' stop=' + JSON.stringify(_stopParams.stop || []) +
               '  (run gobboDiag() to dump the exact prompt the model receives)');
-  const requestBody = { model: getRequestModelName(), messages: apiMessages, stream: true, max_tokens: -1, ...getCardSamplerParams(card), ..._stopParams, ...logitBiasParams };
+  const requestBody = { model: getRequestModelName(), messages: apiMessages, stream: true, max_tokens: -1, ...getCardSamplerParams(card), ...getCardThinkingParams(card), ..._stopParams, ...logitBiasParams };
 
   // Transport + token parsing live in runGenerationStream: a detached
   // server-side job when the fileserver supports it (the reply survives
@@ -318,10 +318,21 @@ function stopGeneration(opts = {}) {
 ================================================================ */
 let _cotWatchdogId = null;
 
+/* The user's runtime limit in whole minutes, or 0 when it is switched off.
+   One reader for both places that enforce it: the timer below, which runs
+   while this page is open, and the server, which is sent the same limit with
+   every job (startGenerationJob in 03-generation.js) so it still holds after
+   the tab is closed or the phone sleeps. Since roadmap 1.7.7 #4 there is no
+   fixed cap behind it -- off means a reply runs until it ends or you stop it. */
+function cotTimeoutLimitMinutes() {
+  if (!state.settings || !state.settings.cotTimeoutEnabled) return 0;
+  return Math.max(1, parseInt(state.settings.cotTimeoutMinutes) || 2);
+}
+
 function startCotWatchdog() {
   clearCotWatchdog();
-  if (!state.settings.cotTimeoutEnabled) return;
-  const mins = Math.max(1, parseInt(state.settings.cotTimeoutMinutes) || 2);
+  const mins = cotTimeoutLimitMinutes();
+  if (!mins) return;
   console.log(`[cot-watchdog] Armed — will auto-stop after ${mins} min`);
   _cotWatchdogId = setTimeout(() => {
     if (isGenerating) {
@@ -790,7 +801,7 @@ async function regenerateFromThread(options = {}) {
   console.log('[gen] family=' + ((activeModel && activeModel.family) || 'unknown') +
               ' stop=' + JSON.stringify(_stopParams.stop || []) +
               '  (run gobboDiag() to dump the exact prompt the model receives)');
-  const requestBody = { model: getRequestModelName(), messages: apiMessages, stream: true, max_tokens: -1, ...getCardSamplerParams(card), ..._stopParams, ...logitBiasParams };
+  const requestBody = { model: getRequestModelName(), messages: apiMessages, stream: true, max_tokens: -1, ...getCardSamplerParams(card), ...getCardThinkingParams(card), ..._stopParams, ...logitBiasParams };
 
   // Shared transport: detached server-side job when available (survives
   // navigation), legacy direct stream otherwise. See sendMessage.

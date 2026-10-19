@@ -34,6 +34,11 @@ import sys
 from collections import OrderedDict
 
 
+# The Add a Model window's buckets. internal/catalog/buckets.go holds the same
+# list; tests/test-catalog-buckets.py keeps the two equal.
+BUCKETS = ("coding", "roleplay", "jack-of-all-trades")
+
+
 def die(msg):
     sys.stderr.write("gen-catalog: ERROR: %s\n" % msg)
     sys.exit(1)
@@ -215,6 +220,20 @@ def main():
                 die("choice %d has a DL_SHA256 that is not 64 hex characters: %r"
                     % (idx, sha))
             out.append("sha256=%s" % sha)
+        # The Add a Model window's buckets (roadmap 1.7.7), from MODEL_TAGS
+        # beside the repo and file. A misspelled bucket would quietly drop the
+        # model from it, so an unknown one stops the build; a model with none
+        # still shows under ALL MODELS, so that only earns a warning.
+        tags = [t.strip().lower() for t in (fields.get("MODEL_TAGS") or "").split(",") if t.strip()]
+        unknown = [t for t in tags if t not in BUCKETS]
+        if unknown:
+            die("choice %d has MODEL_TAGS %s, which is not a bucket; use %s"
+                % (idx, ", ".join(unknown), ", ".join(BUCKETS)))
+        if tags:
+            out.append("tags=%s" % ",".join(tags))
+        else:
+            sys.stderr.write("gen-catalog: warning: choice %d (%s) has no MODEL_TAGS, so it "
+                             "only shows under ALL MODELS\n" % (idx, fields["MODEL_DISPLAY"]))
         out.append("")
 
     with open(dst, "w", encoding="utf-8", newline="\r\n") as handle:

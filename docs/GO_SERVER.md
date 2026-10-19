@@ -146,6 +146,31 @@ listening because nothing is — the range is reserved, not occupied. Check with
 `netsh interface ipv4 show excludedportrange protocol=tcp` and pick a port
 outside every listed range.
 
+## Choosing the address and port from CONFIG
+
+Since 1.7.7, CONFIG's *Phone & Other Devices* box shows the addresses phones
+can use and saves `listen_host` / `listen_port` through `GET`/`POST /lan`
+(`internal/server/lan.go`). A save applies on the next start. Nothing rebinds
+under the page that asked.
+
+**A `listen_host` naming one specific network address is served on loopback
+too** (`127.0.0.1`, or `::1` for an IPv6 address). Pinning narrows what the
+network can reach, never what this machine can: the launchers open and probe
+`127.0.0.1`.
+
+**`POST /lan` refuses a save that would not start:**
+
+- an address this machine doesn't have;
+- a port outside 1024–32767 on Windows (`launch.bat`'s bounds) or 1024–65535
+  elsewhere;
+- the engine's ports;
+- a port that is taken right now.
+
+It also refuses a request whose `Origin` is not this server.
+
+**On Windows it also writes `.gobbonet-port`.** `launch.bat` takes the port from
+there, and would otherwise put the old one back.
+
 ## Orphaned llama-server processes
 
 Stopping llama-server is handled in-process: Ctrl+C, SIGTERM, a model swap and an
@@ -329,11 +354,22 @@ way `internal/proxy` does it:
 | Dial | 10s | upstream not listening |
 | First byte | 5 min | socket accepted, nothing sent — a deadlocked llama.cpp, a GPU hang, a firewall that DROPs |
 | Gap between chunks | 10 min | a stream that stalls mid-generation with no EOF |
-| Total runtime | 30 min | the outermost cap |
+| Total runtime | none, unless the user sets one | only the limit the user chose in CONFIG |
 
 The first-byte window is generous on purpose — a 40K-context prefill can run well
 past thirty seconds before the first token — and the between-chunks watchdog
 bounds the **gap**, never the total, so a long healthy generation is never cut off.
+
+**There is no fixed total cap** (since 1.7.7). There used to be one — thirty
+minutes — and it stopped replies that were still streaming. How long a reply may
+run is now the user's call: CONFIG → *Infinite Runtime Bug Fix* sets a limit,
+and the page sends it with each job as `POST /llm/jobs?max_runtime_s=N`, so the
+server enforces it too and it still holds with the tab closed. The server allows
+15 seconds past it (`pageCapGrace`) so that while the page is open, the page's
+own stop — which carries a note explaining it — lands first. No parameter, or
+`0`, means no limit; anything else that is not a whole number of seconds is
+refused with 400 before the running generation is touched. Memory stays bounded
+regardless: one job's buffer is capped at 128 MiB.
 
 Why a job stopped travels as a context *cause*, because a watchdog trip and a
 user pressing Stop are the same cancellation at the socket. Only the cause
@@ -532,7 +568,7 @@ cmd/gobbonet/          CLI entry point
 internal/config/       TOML config, discovery, mode detection, get/set,
                        the perf.toml tuning overlay
 internal/auth/         sessions, Argon2id + legacy migration, rate limit
-internal/server/       routing, auth gate, health endpoint, /perf
+internal/server/       routing, auth gate, health endpoint, /perf, /lan
 internal/state/        /state and /state/info
 internal/models/       GGUF parsing, classifier, model metadata endpoints
 internal/jobs/         in-memory detached generation

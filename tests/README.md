@@ -156,6 +156,121 @@ pending replies resume after the startup state check whether or not it
 succeeded, and the one-time notice flag reaches storage through
 `saveState({ localOnly })` without scheduling a push.
 
+`test-landing-scroll.mjs` covers the home screen keeping its scroll position
+through the five-second re-render in `24-boot.js`. It drives the real
+`renderMessages()` against a container whose rebuild resets every scroll box,
+and section A proves that fake can fail before B relies on it. D holds the
+early `return` the reported fix dropped. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-landing-scroll.md`](../docs/changelog/CHANGELOG-1.7.7-landing-scroll.md).
+
+`test-about-links.mjs` covers the MODS and DISCORD buttons in ABOUT: the exact
+addresses, `noopener` and `noreferrer`, no address in any script that could run
+on its own, a placeholder that does nothing, and a box copied from YOUR DATA
+rather than designed. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-about-links.md`](../docs/changelog/CHANGELOG-1.7.7-about-links.md).
+
+`test-user-limits.mjs` covers four limits that were constants and are now the
+user's: the per-character reply cap (no 8,192 ceiling), auto-continue's pause
+and chain cap, the lore compression timeout, and the runtime limit the page now
+sends with every job in place of the server's fixed 30 minutes. Each reader is
+held to two rules: the old value is the default, and a missing or nonsense
+stored value falls back to it, never to 0. The server half of the runtime limit
+is in `internal/jobs/runtime_limit_test.go`. Background is in the
+`docs/changelog/CHANGELOG-1.7.7-*` entries for roadmap items #6a, #6b, #6c and
+#4.
+
+`test-thinking-switch.mjs` covers the per-character thinking switch. A character
+with it off sends exactly `chat_template_kwargs: { enable_thinking: false }`, as
+a JSON boolean, since llama.cpp rejects a string. A character with it on sends
+nothing extra, and its request is byte-identical to one without the switch. A
+card with no field, as from an older install or an import, thinks as it always
+did. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-thinking-switch.md`](../docs/changelog/CHANGELOG-1.7.7-thinking-switch.md).
+
+`test-context-budget.mjs` covers the four per-character numbers that decide when
+older messages are compressed into lore: input budget, reply room, landing point
+and verbatim reserve. It runs the real `resolveContextBudget`:
+
+- Left alone, they are the old constants.
+- The card beats the setting, which beats the constant; blank inherits.
+- The combinations that would stall compression are adjusted and explained.
+- The budgeter and the context meter both read the one resolver.
+
+Background is in
+[`docs/changelog/CHANGELOG-1.7.7-context-budget.md`](../docs/changelog/CHANGELOG-1.7.7-context-budget.md).
+
+`test-lan-panel.mjs` covers CONFIG's *Phone & Other Devices* box, run on the
+real panel code:
+
+- **When it can't work** (opened from a file, the PowerShell server, an older
+  program file), it says why and sends nothing.
+- **It lists** the addresses phones can use, with COPY.
+- **It fills the choice** from what the config file says.
+- **It shows the new address before saving**, warning when the page's own
+  address is about to stop working.
+- **Saving sends exactly `{host, port}`**, and reports anything that will stop
+  it applying.
+
+The server half is in `internal/server/lan_test.go`. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-phone-address.md`](../docs/changelog/CHANGELOG-1.7.7-phone-address.md).
+
+`test-wizard-vram.mjs` covers the setup wizard's oversized-model warning, in
+each wizard page (the packaged one, its `linux-amd64/` copy, and the one built
+into the program). It asks only when the engine reports a GPU smaller than the
+model wants:
+
+- It asks nothing when the figure is unknown or the request fails.
+- Declining sends nothing.
+- Accepting downloads.
+
+The GPU reading is in `internal/engine/devices_test.go` and
+`internal/setup/gpu_test.go`. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-wizard-vram-warning.md`](../docs/changelog/CHANGELOG-1.7.7-wizard-vram-warning.md).
+
+`test-password-autofill.mjs` keeps Chrome's password manager from treating
+the chat page as a login form. When it did, the saved username was filled into
+the conversation search on every load, and ran a search. The test pins two
+rules:
+
+- The sign-in box is the page's only `<form>`.
+- Every other password field is `autocomplete="new-password"`.
+
+Background, including how it was reproduced in a real Chromium, is in
+[`docs/changelog/CHANGELOG-1.7.7-search-autofill.md`](../docs/changelog/CHANGELOG-1.7.7-search-autofill.md).
+
+`test-catalog-filters.mjs` covers the Add a Model window's filters, on the real
+list code:
+
+- **Type** (coding, roleplay, jack of all trades) comes from each model's
+  buckets.
+- **Size** splits at 8 and 16 GB of GPU memory.
+- **Combinations** of the two narrow the list together.
+- **ALL MODELS / ANY SIZE** show everything.
+- **The choice** lasts while the page is open.
+- **The buttons** are built from existing pieces.
+
+`test-catalog-buckets.py` follows the tags from `launch.bat`'s `MODEL_TAGS`
+through `installer/gen-catalog.py` into `models.ini`. The Go side, including
+the live list borrowing buckets from the bundled one, is in
+`internal/catalog/buckets_test.go`. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-catalog-filters.md`](../docs/changelog/CHANGELOG-1.7.7-catalog-filters.md).
+
+```sh
+python3 tests/test-catalog-buckets.py
+```
+
+`test-download-testing.mjs` covers the *Add a Model* button, live again for
+testing but not listed as working. It checks four things:
+
+- The button works, with nothing to find first.
+- The box says it is not confirmed working, until marked confirmed.
+- The hold still works as one flag.
+- A failed download names the step it stopped at.
+
+The downloader's own diagnostics are in
+`internal/modelfetch/diagnose_test.go`. Background is in
+[`docs/INVESTIGATION-in-app-downloads.md`](../docs/INVESTIGATION-in-app-downloads.md).
+
 ## Launcher invariants
 
 `test-launch-gpu-detect.py` checks the arrangement in `launch.bat` that lets it
@@ -185,6 +300,84 @@ placement (`-1`) into 99 layers: on the legacy path only, before llama-server
 and the hot-swap variables see it, never on the managed hand-off to
 `gobbonet.exe`, which does its own capability-checked fitting.
 
+## Build scripts
+
+`test-build-scripts.py` holds the rule that no build script runs another as a
+bare path or behind `[ -x ]` — always `bash x.sh` or `python3 x.py`. The
+executable bit does not survive a commit made from Windows, and before this every
+build script had lost it: `./build-release.sh` was refused, and two steps skipped
+themselves silently. It tests its own pattern against the exact lines it
+replaced, so it cannot pass by matching nothing. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-build-scripts.md`](../docs/changelog/CHANGELOG-1.7.7-build-scripts.md).
+
+```sh
+python3 tests/test-build-scripts.py
+```
+
+`test-linux-onboarding.py` runs the real first-run flow of an installed Linux
+build. It needs a built install, not a checkout: point `GOBBONET_TEST_PREFIX` at
+one — a `gobbonet` binary beside the contents of `linux-amd64/`, with an engine
+under `llama-cpp/`. A stub engine that answers `--version` is enough, since the
+test switches to a remote backend before anything would load a model. To run the
+same first run through an extracted ZIP's front door, also set
+`GOBBONET_TEST_ENTRY` to that ZIP's top-level `./gobbonet`.
+
+`test-version-strings.py` holds the release number's literal copies to
+`VERSION`: `installer-win/gobbonet.nsi`'s `APPVER`, `OutFile` and
+`VIProductVersion`, and `installer/gobbonet.nsi`'s use of its define. The page
+stamp has its own test, `test-version-stamp.mjs`.
+
+`test-windows-installer.py` holds the Windows installer to being
+`installer-win/`, with the flow it has had since 1.7.0:
+
+- **The pages:** Welcome, Destination, Password, Port, Install, the Defender
+  notice, Finish.
+- **The look:** dark throughout.
+- **No model step:** no backend choice and no model download during setup.
+- **The console:** *Launch GobboNet* and the shortcuts open `launch.bat`,
+  which detects the hardware, offers the models, then hands over with `--open`.
+- **The payload:**
+  - every helper `launch.bat` runs is installed;
+  - `models.ini` is installed and removed;
+  - everything installed at the root is removed on uninstall.
+- **The build guide:** it holds `docs/BUILDING.md` to naming `installer-win/`.
+  `installer/` was built by mistake for 1.7.4 and for the first 1.7.7 test
+  build.
+
+It does not compile the installer. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-windows-installer.md`](../docs/changelog/CHANGELOG-1.7.7-windows-installer.md).
+
+```sh
+python3 tests/test-windows-installer.py
+```
+
+`test-linux-installer.py` does the same for Linux. It holds `installer-linux/`
+— the `.deb`, whose menu entry runs `gobbonet-launch` and its browser setup
+wizard — to the 1.7.5 flow `LINUX-START-HERE.md` names:
+
+- **The wizard:** its steps, their headings and the order between them.
+- **The model step's note:** it names the folder chosen at *Install location*,
+  not the one the wizard loaded with.
+- **The package:** it carries the wizard, `models.ini` and the Vulkan engine.
+- **The ZIP's runtime:** the copy in `linux-amd64/` is the same wizard.
+- **The Fedora package:** `build-rpm.sh` packages that same launcher and wizard.
+- **The build guide:** it builds the `.deb` from `installer-linux/`.
+
+`test-linux-onboarding.py` runs that flow for real; this checks the source.
+Background is in
+[`docs/changelog/CHANGELOG-1.7.7-linux-installer.md`](../docs/changelog/CHANGELOG-1.7.7-linux-installer.md).
+
+```sh
+python3 tests/test-linux-installer.py
+```
+
+`test-zip-entry.py` covers the ZIP's front door: the Linux ZIP's `./gobbonet` is a
+short script that hands over to `linux-amd64/gobbonet-launch`, so a ZIP user
+gets the setup page and then the chat, as a `.deb` user does. It checks the
+arguments, the symlink and missing-folder cases, and that `make-zip.sh` ships the
+script rather than whatever binary is lying in the tree. Background is in
+[`docs/changelog/CHANGELOG-1.7.7-zip-launcher.md`](../docs/changelog/CHANGELOG-1.7.7-zip-launcher.md).
+
 ## Preview pages (`preview/`)
 
 A suite tells you the renderer produced the right markup. It cannot tell you
@@ -203,3 +396,9 @@ Alongside the code they cover, run the usual way:
 ```sh
 go test ./...
 ```
+
+`internal/webui/webui_test.go` covers when the unpacked `web/` folder is
+rewritten: when the version changes, and when the page built into the binary
+changes under the same version. Hand edits survive restarts of the same build.
+Background is in
+[`docs/changelog/CHANGELOG-1.7.7-web-refresh.md`](../docs/changelog/CHANGELOG-1.7.7-web-refresh.md).

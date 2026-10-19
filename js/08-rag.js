@@ -615,14 +615,19 @@ async function buildContextMessages(thread, card, opts) {
   opts = opts || {};
   // Per-card, falling back to the model's detected context.
   const tokenLimit = resolveContextLimit(card);
-  const budget = Math.floor(tokenLimit * 0.9);
+  // The four fractions below are the character's own since roadmap 1.7.7
+  // #6d (card -> setting -> the old constants), resolved and range-checked
+  // in resolveContextBudget (js/04-state.js). The comments describe what
+  // each one does; the numbers in them are the defaults.
+  const ctxBudget = resolveContextBudget(card);
+  const budget = Math.floor(tokenLimit * ctxBudget.input);
 
   // Post-compression landing zone, as a fraction of budget. The gap
   // between this and 1.0 = headroom before the NEXT compression fires.
   //   0.65 → ~25% headroom
   //   higher → smaller savings per pass, more frequent compressions
   //   lower  → bigger savings per pass, longer between compressions
-  const TARGET_FACTOR = 0.65;
+  const TARGET_FACTOR = ctxBudget.land;            // default 0.65
 
   // Trailing token reserve: the most-recent slice of the conversation
   // we promise to keep verbatim no matter what. Expressed as a fraction
@@ -630,7 +635,7 @@ async function buildContextMessages(thread, card, opts) {
   // 16k this is ~3.1k tokens of recent talk, at 100k it's ~19.5k. Both
   // are sensible "don't compress what the model needs to respond to
   // the next turn" floors.
-  const RECENT_RESERVE_FACTOR = 0.22;
+  const RECENT_RESERVE_FACTOR = ctxBudget.keep;    // default 0.22
   const recentReserve = Math.floor(budget * RECENT_RESERVE_FACTOR);
 
   // Response reserve: how much of the budget we hold back as guaranteed
@@ -655,7 +660,7 @@ async function buildContextMessages(thread, card, opts) {
   // compression lands at TARGET_FACTOR. NOTE: the hard trim safety net
   // further down still keys off `budget` (the real physical ceiling) —
   // this reserve is a softer trigger, not a new physical limit.
-  const RESPONSE_RESERVE_FACTOR = 0.20;
+  const RESPONSE_RESERVE_FACTOR = ctxBudget.reply;  // default 0.20
   const responseReserve = Math.floor(budget * RESPONSE_RESERVE_FACTOR);
   const effectiveBudget = budget - responseReserve;
 

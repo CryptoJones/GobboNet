@@ -10,14 +10,9 @@ import (
 // Present the socket we actually bound, not a configured address that failed.
 // Full URLs get their own lines so adapter names do not push them off-screen.
 func printReadyPanel(w io.Writer, cfg config.Config, bind *server.Bind, addrs []server.LANAddr) {
-	host := bind.Host
-	switch host {
-	case "", "0.0.0.0":
-		host = "127.0.0.1"
-	case "::":
-		host = "::1"
-	}
-	local := (server.LANAddr{IP: host}).URL(bind.Port)
+	// Loopback whenever it is served -- including beside a pinned address, which
+	// used to print the pinned address here.
+	local := bind.LocalURL()
 	fmt.Fprintln(w, "\n ====================================================")
 	fmt.Fprintln(w, "      GOBBONET IS RUNNING - CONNECTION ADDRESSES")
 	fmt.Fprintln(w, " ====================================================")

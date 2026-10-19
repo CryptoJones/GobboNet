@@ -626,3 +626,22 @@ func TestUnavailableCatalogueExplainsItself(t *testing.T) {
 		t.Error("detail is empty; the underlying error is the other half of the answer")
 	}
 }
+
+// Roadmap 1.7.7: each model carries its buckets, always as a list, so the
+// window's type filter never has to treat null as a case.
+func TestCatalogJSONCarriesBuckets(t *testing.T) {
+	srv, _ := newTestServer(t)
+	cat := withCatalog(t, srv)
+	cat.Entries[0].Tags = []string{"general", "coding", "roleplay"}
+
+	body := decode(t, do(t, srv, http.MethodGet, "/catalog.json", nil))
+	models := body["models"].([]any)
+	first := models[0].(map[string]any)["buckets"].([]any)
+	if len(first) != 2 || first[0] != "coding" || first[1] != "roleplay" {
+		t.Errorf("first model's buckets = %v, want [coding roleplay] (general is a description, not a bucket)", first)
+	}
+	second, ok := models[1].(map[string]any)["buckets"].([]any)
+	if !ok || len(second) != 0 {
+		t.Errorf("an untagged model's buckets = %#v, want an empty list", models[1].(map[string]any)["buckets"])
+	}
+}

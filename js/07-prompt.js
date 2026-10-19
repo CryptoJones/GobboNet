@@ -424,8 +424,19 @@ async function compressWithCardModel(existingLore, toArchive, authored, tokenLim
    buildContextMessages, which sendMessage awaits, so this is also the
    longest the app can appear frozen before the user's turn goes through.
    Generous enough that a slow local model finishes normally; short enough
-   that a stuck one is an inconvenience rather than a lockup. */
+   that a stuck one is an inconvenience rather than a lockup.
+
+   45 s is the default. Since roadmap 1.7.7 #6c it is a setting (CONFIG ->
+   Lore Compression, or loreTimeoutSeconds in gobbonet.toml's [ui] table),
+   because "a slow local model" is exactly what a CPU-only install runs, and
+   those were the ones losing their oldest messages unsummarised. Read per
+   pass through loreTimeoutMs(). The floor is 5 s: below that no model
+   finishes, and every pass would fail. */
 const LORE_TIMEOUT_MS = 45000;
+function loreTimeoutMs() {
+  const s = parseInt(state.settings && state.settings.loreTimeoutSeconds, 10);
+  return isFinite(s) ? Math.max(5, s) * 1000 : LORE_TIMEOUT_MS;
+}
 
 /* Output budget for one compression pass.
 
@@ -898,7 +909,9 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
   // On abort we keep the previous lore and carry on. Losing one beat is a
   // rounding error; losing the message someone just typed is not.
   const _loreAbort = new AbortController();
-  const _loreTimer = setTimeout(() => _loreAbort.abort(), LORE_TIMEOUT_MS);
+  // Read once per pass, so the message below reports the limit that applied.
+  const _loreTimeoutMs = loreTimeoutMs();
+  const _loreTimer = setTimeout(() => _loreAbort.abort(), _loreTimeoutMs);
 
   /* One send. Extracted so the 400 handler can re-fit and try again
      without duplicating the request body. */
@@ -1109,7 +1122,7 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
                 + ' dropped from context without being summarised.';
     _loreLastKind = 'failed';
     if (e && e.name === 'AbortError') {
-      _loreLastOutcome = 'timed out after ' + Math.round(LORE_TIMEOUT_MS / 1000)
+      _loreLastOutcome = 'timed out after ' + Math.round(_loreTimeoutMs / 1000)
                        + 's and was cancelled so the turn could continue.' + _lost;
       console.warn('[lore] compression timed out.', _loreLastOutcome);
     } else {

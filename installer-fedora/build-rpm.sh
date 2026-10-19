@@ -358,7 +358,9 @@ chmod 0755 "$STAGE/usr/lib/gobbonet/gobbonet" "$STAGE/usr/lib/gobbonet/gobbonet-
 
 # Before anything is packaged. A mismatch here is a package that would install
 # and not work, and finding that out at build time costs nothing.
-"$ROOT/verify-payload.sh" "$STAGE/usr/lib/gobbonet" "rpm payload"
+# Through bash, not as a path -- the executable bit does not survive a commit
+# made from Windows. tests/test-build-scripts.py holds every call to this.
+bash "$ROOT/verify-payload.sh" "$STAGE/usr/lib/gobbonet" "rpm payload"
 
 # ---------------------------------------------------------------------------
 # Build
@@ -418,7 +420,7 @@ fi
 # builds but would install broken must not sit there looking shippable.
 # ---------------------------------------------------------------------------
 echo
-if ! "$HERE/check-rpm.sh" "$RPM"; then
+if ! bash "$HERE/check-rpm.sh" "$RPM"; then
     rm -f "$RPM"
     fail "the package does not meet check-rpm.sh; it was removed from dist/.
        The rejected build is still at $BUILT for inspection."

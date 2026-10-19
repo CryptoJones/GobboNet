@@ -285,8 +285,11 @@ say "libc6 floor from the engine binaries: $LIBC_MIN"
 # ---------------------------------------------------------------------------
 # Catalogue and web assets, regenerated rather than trusted.
 # ---------------------------------------------------------------------------
-if [ -x "$ROOT/installer/gen-catalog.py" ] && [ -f "$ROOT/launch.bat" ]; then
-    "$ROOT/installer/gen-catalog.py" "$ROOT/launch.bat" "$ROOT/installer/models.ini"
+# -f and python3, not -x and a bare path. The executable bit does not survive a
+# commit made from Windows, and keyed on it this step would skip SILENTLY and
+# ship whatever models.ini was lying around. tests/test-build-scripts.py.
+if [ -f "$ROOT/installer/gen-catalog.py" ] && [ -f "$ROOT/launch.bat" ]; then
+    python3 "$ROOT/installer/gen-catalog.py" "$ROOT/launch.bat" "$ROOT/installer/models.ini"
 fi
 [ -f "$ROOT/installer/models.ini" ] || fail "installer/models.ini is missing"
 # No web staging here any more. The chat page is compiled into the gobbonet
@@ -404,9 +407,9 @@ rm -f "$DEB"
 # against, and checked HERE rather than beside any one install line: staging
 # happens across thirty lines, so a check placed next to the first of them
 # reports every later file as missing. It caught exactly that on its first run.
-"$ROOT/verify-payload.sh" "$STAGE/usr/lib/gobbonet" "deb payload"
+bash "$ROOT/verify-payload.sh" "$STAGE/usr/lib/gobbonet" "deb payload"
 
-"$ROOT/installer-linux/package-permissions.sh" "$STAGE"
+bash "$ROOT/installer-linux/package-permissions.sh" "$STAGE"
 
 # Root-owned program files without needing to be root to build.
 if command -v fakeroot >/dev/null 2>&1; then

@@ -403,8 +403,27 @@ function finishRename(id, newName) {
 
 const AUTO_CONTINUE_TEXT = "Continue the work as instructed, without waiting for further input. Play the roles of all parties as the situation requires: if you are coding, you are both the developer and the bug hunter; if you are telling a story, you play every character; if you are reasoning through a problem, you challenge your own conclusions. Keep going until the task reaches a natural completion point.";
 
+// The defaults -- and what every install had before these became settings in
+// roadmap 1.7.7 #6b. CONFIG -> Auto-Continue changes them per device; the
+// [ui] table in gobbonet.toml can preset them.
 const AUTO_CONTINUE_DELAY_MS = 20000;
 const AUTO_CONTINUE_MAX_CHAIN = 50;   // safety cap; {{auto_continue_9999}} would otherwise be a foot-gun
+
+/* Read at the moment of use, never cached, so a CONFIG change applies to the
+   next step of a chain without a reload. A missing or nonsense value falls
+   back to the default rather than to zero: a cleared field must not quietly
+   mean "fire instantly" or "never continue".
+
+   0 s is a real choice (no pause between posts) and is honoured. The chain
+   cap's floor is 1 -- the post being sent is always the first. */
+function autoContinueDelayMs() {
+  const s = parseInt(state.settings && state.settings.autoContinueDelaySeconds, 10);
+  return (isFinite(s) && s >= 0) ? s * 1000 : AUTO_CONTINUE_DELAY_MS;
+}
+function autoContinueMaxChain() {
+  const n = parseInt(state.settings && state.settings.autoContinueMaxChain, 10);
+  return (isFinite(n) && n >= 1) ? n : AUTO_CONTINUE_MAX_CHAIN;
+}
 
 // Runtime state. Null when no chain is active.
 // Shape: { threadId, total, remaining, sendTimer, countdownTimer, secsLeft }
@@ -428,7 +447,8 @@ function detectAutoContinueMacro(content) {
   if (!m) return null;
   let count = parseInt(m[1], 10);
   if (!isFinite(count) || count < 1) count = 1;
-  if (count > AUTO_CONTINUE_MAX_CHAIN) count = AUTO_CONTINUE_MAX_CHAIN;
+  const cap = autoContinueMaxChain();
+  if (count > cap) count = cap;
   const normalized = content.replace(/\{\{auto_continue_\d+\}\}/gi, '{{auto_continue}}');
   return { count, normalizedContent: normalized };
 }
@@ -483,8 +503,10 @@ function maybeContinueChain() {
     return;
   }
 
-  // Spin up the visible countdown + the actual send timer.
-  autoContinue.secsLeft = Math.ceil(AUTO_CONTINUE_DELAY_MS / 1000);
+  // Spin up the visible countdown + the actual send timer. Read once, so the
+  // countdown and the timer cannot disagree if CONFIG changes mid-wait.
+  const delayMs = autoContinueDelayMs();
+  autoContinue.secsLeft = Math.ceil(delayMs / 1000);
   renderAutoContinueIndicator();
 
   autoContinue.countdownTimer = setInterval(() => {
@@ -506,7 +528,7 @@ function maybeContinueChain() {
     // short {{auto_continue}} form; translateTemplates expands it to
     // AUTO_CONTINUE_TEXT when building the context for the LLM.
     sendMessage('{{auto_continue}}');
-  }, AUTO_CONTINUE_DELAY_MS);
+  }, delayMs);
 }
 
 /**

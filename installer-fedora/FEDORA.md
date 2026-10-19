@@ -2,7 +2,7 @@
 
 Install the package with dnf:
 
-    sudo dnf install ./gobbonet-1.7.6-*.fedora.x86_64.rpm
+    sudo dnf install ./gobbonet-1.7.7-*.fedora.x86_64.rpm
 
 Then run `gobbonet` as yourself (not with sudo), or open GobboNet from the
 application menu. The first launch opens the setup wizard in your browser.
@@ -41,10 +41,10 @@ to do nothing, the reason is in ~/.local/share/gobbonet/launch.log.
 **Removing.** `sudo dnf remove gobbonet` removes the program and leaves your
 data alone. To clear your data as well, run `gobbonet uninstall` as yourself
 first -- it asks about the models separately -- and then remove the package.
-(`gobbonet uninstall` currently ends by suggesting `apt remove`; on Fedora the
-command is `sudo dnf remove gobbonet`.)
+`gobbonet uninstall` ends by naming that command.
 
 This is an unsigned local RPM for Fedora x86_64. Its dependency resolution,
-installation, upgrade from 1.7.3-3, removal and first-run setup were tested
-against Fedora 43, 44, 45 and Rawhide. SELinux on a real desktop and GPU
-inference on real hardware still need testing on Fedora hardware.
+installation, upgrade from 1.7.6, removal, first-run setup and a chat answered
+by the bundled engine were tested against Fedora 43, 44, 45 and Rawhide.
+SELinux on a real desktop and GPU inference on real hardware still need testing
+on Fedora hardware.

@@ -70,7 +70,9 @@ VERSION_QUAD="${_v1:-0}.${_v2:-0}.${_v3:-0}.${_v4:-0}"
 # Regenerate the catalogue. Always, not just when missing -- the whole
 # point of generating it is that it cannot silently lag launch.bat.
 #--------------------------------------------------------------------
-./gen-catalog.py "$ROOT/launch.bat" models.ini
+# Through python3, not ./ -- the executable bit does not survive a commit made
+# from Windows. tests/test-build-scripts.py holds every call to this rule.
+python3 ./gen-catalog.py "$ROOT/launch.bat" models.ini
 
 #--------------------------------------------------------------------
 # Stage payload

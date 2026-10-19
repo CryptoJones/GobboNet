@@ -62,6 +62,9 @@ saved considerably more time than the patch that followed them.
   launch.bat guidance. Issue #43.
 - @Alunatopia - Reported the Windows "drive specified" startup messages.
   Issue #36.
+- larckdrakengold - Found the home-screen character list snapping back to the
+  top on its own, traced it to the five-second re-render, and shared the
+  working fix. 1.7.7.
 
 Thanks also to the GobboNet Discord community, whose testing and reports
 shaped fixes across the 1.5 and 1.6 releases.

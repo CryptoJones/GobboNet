@@ -405,7 +405,12 @@ if [ -n "$UPGRADE_FROM" ]; then
     echo "-- upgrade from $OLD"
     new_root upgrade
     dnf_offline install "/tmp/pkgs/$(basename "$DESKTOP_STUB")" >/dev/null 2>&1
-    if out="$(in_root rpm -i --nosignature "/tmp/pkgs/$OLD" 2>&1)"; then
+    # From 1.7.6 on the old package needs OpenSSL 3 as well, by soname, so on an
+    # OpenSSL 4 system it goes in with the stand-in, as the new one does below.
+    # 1.7.3-3 asked only for openssl-libs >= 3.0, which OpenSSL 4 satisfied.
+    old_set=("/tmp/pkgs/$OLD")
+    [ -z "$OSSL3_STUB" ] || [ "$OSSL4" = 0 ] || old_set+=("/tmp/pkgs/$(basename "$OSSL3_STUB")")
+    if out="$(in_root rpm -i --nosignature "${old_set[@]}" 2>&1)"; then
         info "installed $OLD"
         if as_tester "$LIB/llama-cpp/llama-server" --version >/dev/null 2>&1; then
             info "its engine starts here"

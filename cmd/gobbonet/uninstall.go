@@ -168,16 +168,52 @@ func cmdUninstall(argv []string) error {
 	fmt.Println("  under site data for the address you used.")
 	fmt.Println()
 	// This command clears user data; something else owns the program files.
-	// Naming apt on Windows -- where the NSIS uninstaller invokes this -- sent
-	// people looking for a package manager that is not there.
-	if runtime.GOOS == "windows" {
-		fmt.Println("  The program files themselves belong to the uninstaller:")
-		fmt.Println("  Settings > Apps > GobboNet > Uninstall.")
-	} else {
-		fmt.Println("  The program files themselves are the package manager's:  sudo apt remove gobbonet")
+	exe, _ := os.Executable()
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	for _, line := range removeHint(runtime.GOOS, exe) {
+		fmt.Println(line)
 	}
 	fmt.Println()
 	return nil
+}
+
+// removeHint says what removes the program files, which this command leaves to
+// whatever installed them. It goes by where the running binary is, because
+// that is what decides it -- not the distribution: a ZIP unpacked on Fedora is
+// still a ZIP.
+//
+// It used to name apt everywhere but Windows, so the Fedora package's users
+// were told to run a command their system does not have. 1.7.6 deferred the fix
+// to the next binary (CHANGELOG-1.7.6-fedora-rpm.md, "Still outstanding") and
+// put the dnf command in FEDORA.md meanwhile. Naming apt on Windows -- where
+// the NSIS uninstaller invokes this -- had already sent people looking for a
+// package manager that is not there.
+func removeHint(goos, exe string) []string {
+	switch {
+	case goos == "windows":
+		return []string{
+			"  The program files themselves belong to the uninstaller:",
+			"  Settings > Apps > GobboNet > Uninstall.",
+		}
+	// The .rpm's program directory (%{_libdir}/gobbonet in gobbonet.spec).
+	case strings.HasPrefix(exe, "/usr/lib64/gobbonet/"):
+		return []string{"  The program files themselves are the package manager's:  sudo dnf remove gobbonet"}
+	// The .deb's (installer-linux/build-deb.sh).
+	case strings.HasPrefix(exe, "/usr/lib/gobbonet/"):
+		return []string{"  The program files themselves are the package manager's:  sudo apt remove gobbonet"}
+	}
+	// A portable ZIP, or a build run from anywhere else: nothing installed it,
+	// so the folder it runs from is the program.
+	lines := []string{
+		"  Nothing installed the program files, so removing them is up to you:",
+		"  delete the folder you unpacked GobboNet into.",
+	}
+	if exe != "" {
+		lines = append(lines, "  This program is in "+filepath.Dir(exe))
+	}
+	return lines
 }
 
 func askYesNo(prompt string) bool {

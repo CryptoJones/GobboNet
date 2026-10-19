@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# GobboNet, from the ZIP.
+#
+# make-zip.sh puts this at the top of the archive as `gobbonet` -- the file
+# LINUX-START-HERE.md tells you to run as `./gobbonet`. It hands straight over to
+# linux-amd64/gobbonet-launch, the same launcher the Debian and Fedora packages
+# install as their `gobbonet` command, so the ZIP gets the same first run: the
+# setup page opens in your browser, asks its questions, and then the chat opens.
+#
+# Anything after it is passed through untouched, and the launcher sends every
+# command that is not its own straight to the server -- so `./gobbonet doctor`,
+# `./gobbonet version` and `./gobbonet config set ...` work exactly as they do
+# from a package.
+#
+# Until 1.7.7 this place held a copy of the server binary. A first run printed
+# "review config.toml, then run gobbonet again" and stopped: no setup, no
+# browser, no launch.log -- none of what LINUX-START-HERE.md describes. Roadmap
+# 1.7.7 #14.
+#
+# In the repository this is installer-linux/gobbonet-zip-entry, never a file
+# called `gobbonet` at the top: `go build ./cmd/gobbonet` writes its binary
+# there, and would silently replace it.
+#
+# The launcher is run through bash, not as a path, so a lost executable bit on
+# it cannot stop GobboNet starting (tests/test-build-scripts.py explains why
+# that bit is not to be trusted).
+
+here="$(dirname "$(readlink -f "$0")")"
+launcher="$here/linux-amd64/gobbonet-launch"
+
+if [ ! -f "$launcher" ]; then
+    echo "GobboNet: cannot find $launcher" >&2
+    echo "Keep the extracted GobboNet folder together -- this file only starts" >&2
+    echo "the copy of GobboNet that sits beside it." >&2
+    exit 1
+fi
+
+exec bash "$launcher" "$@"

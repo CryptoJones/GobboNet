@@ -135,7 +135,8 @@ function run(name, { catalogBody, downloadPost, downloadGet, isServed = true }, 
   // lexical scope rather than on the context object. Expose a setter so the
   // suite can drive both sides of the temporary hold.
   vm.runInContext(block +
-    '\nglobalThis.__setCatalogEnabled = (v) => { MODEL_CATALOG_ENABLED = v; };', ctx);
+    '\nglobalThis.__setCatalogEnabled = (v) => { MODEL_CATALOG_ENABLED = v; };' +
+    '\nglobalThis.__setCatalogConfirmed = (v) => { MODEL_CATALOG_CONFIRMED = v; };', ctx);
 
   return body({ ctx, els: dom.els, calls });
 }
@@ -337,6 +338,9 @@ await run('served mode, hold flag ON: the button works normally', {
   isServed: true,
 }, async ({ ctx, els }) => {
   ctx.__setCatalogEnabled(true);
+  // The state once testing has confirmed it works (1.7.7 #8b). The note the
+  // unconfirmed state keeps up is covered in test-download-testing.mjs.
+  ctx.__setCatalogConfirmed(true);
   const block = els['add-model-block'];
   const btn = { tag: 'button', style: {} };
   block.children.push(btn);

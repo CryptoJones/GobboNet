@@ -276,13 +276,42 @@
 
   $("b3skip").onclick = function () { show(5); };
 
+  /* Roadmap 1.7.7 #8a: launch.bat's "heads up" before a model too big for the
+     GPU, through the browser's own confirm(), as every other confirmation in
+     GobboNet does. /api/gpu answers from the engine's own --list-devices.
+     Anything short of a known figure -- no engine, no GPU, only an integrated
+     one, a probe that failed -- asks nothing: a failed probe never blocks. */
+  function confirmFit(m) {
+    if (!m || !(m.min_vram > 0)) return Promise.resolve(true);
+    return fetch("/api/gpu").then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; })
+      .then(function (g) {
+        if (!g || !g.known || !(g.vram_gb > 0) || g.vram_gb >= m.min_vram) return true;
+        return window.confirm(
+          m.display + " wants about " + m.min_vram + " GB of GPU memory, but only " +
+          g.vram_gb + " GB was detected" + (g.device ? " (" + g.device + ")" : "") + ".\n\n" +
+          "It may run far more slowly than a model that fits: whatever does not fit " +
+          "on the GPU runs from system memory instead.\n\nDownload it anyway?");
+      });
+  }
+  function pickedModel() {
+    var list = (state && state.models) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].index === pick) return list[i];
+    return null;
+  }
+
   $("b3").onclick = function () {
     if (pick === null) return fail("Choose a model first.");
-    post("/api/download", { index: pick }).then(function () {
-      show(4);
-      poll = setInterval(tick, 700);
-      tick();
-    }).catch(function (e) { fail(e.message); });
+    $("b3").disabled = true;
+    confirmFit(pickedModel()).then(function (go) {
+      if (!go) { $("b3").disabled = false; return; }
+      return post("/api/download", { index: pick }).then(function () {
+        $("b3").disabled = false;
+        show(4);
+        poll = setInterval(tick, 700);
+        tick();
+      });
+    }).catch(function (e) { $("b3").disabled = false; fail(e.message); });
   };
 
   function tick() {

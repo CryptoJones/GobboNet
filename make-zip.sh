@@ -92,7 +92,8 @@ LDFLAGS="-s -w -X github.com/ElodineOfficial/GobboNet/internal/version.Version=$
 
 # The frontend is compiled INTO each binary, so staging is an input to the build
 # and has to happen before it. A binary built without this has no chat page.
-./stage-web.sh
+# Through bash, not ./ -- see build-release.sh.
+bash ./stage-web.sh
 [ -f internal/webui/assets/chat.html ] || {
     echo "ERROR: stage-web.sh produced no chat.html; the binaries would have no UI" >&2
     exit 1
@@ -183,11 +184,17 @@ copy_in() {
     cp -a "$rel" "$TOP/$(dirname "$rel")/"
 }
 
+# No top-level `gobbonet` in this list, on purpose. It used to be here, and
+# nothing built it: the archive took whatever file of that name was lying in
+# the tree -- a leftover `go build`, of any age -- and the stamp check below
+# only ever looked at linux-amd64/gobbonet. It is installed from
+# installer-linux/gobbonet-zip-entry just after this loop instead.
 for rel in \
-    gobbonet.exe gobbonet launch.bat fileserver.ps1 setup-lan.bat teardown-lan.bat \
+    gobbonet.exe launch.bat fileserver.ps1 setup-lan.bat teardown-lan.bat \
     stop-gobbonet.bat hardware-probe.ps1 hw-recommend.ps1 identify-model.ps1 \
     chat.html default-characters.json gobbonet.ico VERSION \
     README.md TROUBLESHOOTING.md SECURITY.md LINUX-START-HERE.md LICENSE AGENTS.md \
+    CONTRIBUTORS.md \
     go.mod go.sum build-release.sh make-zip.sh stage-web.sh verify-payload.sh \
     payload.manifest engine.sha256 .gitignore \
     js css docs tests cmd internal installer installer-win installer-linux \
@@ -195,6 +202,16 @@ for rel in \
 do
     copy_in "$rel"
 done
+
+# The Linux ZIP's front door. LINUX-START-HERE.md tells ZIP users to run
+# `./gobbonet`; this makes that the launcher -- setup page, then chat -- exactly
+# as the packages' `gobbonet` command is, instead of the bare server, which on a
+# first run only said "review config.toml". A text file, so unlike a binary it
+# cannot go stale. Roadmap 1.7.7 #14.
+ZIP_ENTRY="installer-linux/gobbonet-zip-entry"
+[ -f "$ZIP_ENTRY" ] || { echo "ERROR: $ZIP_ENTRY is missing" >&2; exit 1; }
+cp "$ZIP_ENTRY" "$TOP/gobbonet"
+chmod 0755 "$TOP/gobbonet"
 
 # Build leftovers must not travel. dist/ inside dist/ is the obvious one; the
 # rest are things a local build or a test run drops in the tree.
@@ -278,6 +295,14 @@ case "$stamped" in
     *) echo "ERROR: linux-amd64/gobbonet reports '$stamped', not '$VERSION'" >&2; exit 1 ;;
 esac
 
+# The top-level `gobbonet` must be the ZIP entry, byte for byte -- not a binary
+# that wandered in. Checked here, after assembly, for the same reason as the
+# stamp above: the last time this file was wrong, nothing looked.
+cmp -s "$TOP/gobbonet" "$ZIP_ENTRY" && [ -x "$TOP/gobbonet" ] || {
+    echo "ERROR: the archive's top-level gobbonet is not $ZIP_ENTRY (or is not executable)" >&2
+    exit 1
+}
+
 # And the page inside it must match the VERSION file, or the two halves that
 # were just unified are out of step again.
 ui="$(grep -o "GOBBONET_UI_VERSION = '[^']*'" "$TOP/js/01-config.js" | head -1 | sed "s/.*'\\(.*\\)'/\\1/")"
@@ -308,6 +333,7 @@ echo
 echo "  $ARCHIVE  ($(du -h "$ARCHIVE" | cut -f1))"
 echo "  version:  $VERSION"
 echo "  servers:  gobbonet.exe (windows/amd64), linux-amd64/gobbonet (linux/amd64)"
+echo "  linux:    ./gobbonet -> linux-amd64/gobbonet-launch (setup, then chat)"
 if [ "$WITH_ENGINE" -eq 0 ]; then
     echo "  engine:   NOT included -- this is an update archive"
 else

@@ -136,7 +136,7 @@ func Fetch(opts Options) (*Catalog, []string, error) {
 					_ = writeCache(opts.CacheDir, &cacheFile{
 						FetchedAt: now(), ETag: etag, LastModified: lastMod, Body: string(body),
 					})
-					return cat, notes, nil
+					return cat, withBundledBuckets(cat, opts.BundledPath, notes), nil
 				}
 			}
 		}
@@ -149,7 +149,7 @@ func Fetch(opts Options) (*Catalog, []string, error) {
 		if cat, err := ParseRemote([]byte(cached.Body), opts.ClientVersion); err == nil {
 			cat.Source = "cache"
 			notes = append(notes, "using the last catalogue that was fetched successfully")
-			return cat, notes, nil
+			return cat, withBundledBuckets(cat, opts.BundledPath, notes), nil
 		} else {
 			notes = append(notes, "the cached catalogue no longer parses: "+err.Error())
 		}

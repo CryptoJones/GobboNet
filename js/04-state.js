@@ -119,6 +119,14 @@ const DEFAULT_CARD = {
   contextLimit: 0,
   smartLimitEnabled: false,
   smartLimitTokens: 300,
+  // Roadmap 1.7.7 #9. Read as `!== false` (cardThinkingEnabled), so a card
+  // without the field thinks, as every card did before it existed.
+  thinkingEnabled: true,
+  // Roadmap 1.7.7 #6d. null = inherit the setting -- see resolveContextBudget.
+  contextInputPercent: null,
+  contextReplyPercent: null,
+  contextLandPercent: null,
+  contextKeepPercent: null,
   logitBiasStrength: -20
 };
 /* Per-card context and reply limits.
@@ -160,7 +168,89 @@ function resolveSmartLimit(card) {
     : !!s.smartLimitEnabled;
   const raw = (card && parseInt(card.smartLimitTokens, 10))
     || parseInt(s.smartLimitTokens, 10) || 300;
-  return { enabled: enabled, tokens: Math.min(8192, Math.max(25, raw)) };
+  // A floor, no ceiling. This used to clamp at 8192, silently, on a number the
+  // user typed for their own character -- the kind of hard-coded limit roadmap
+  // 1.7.7 #6 removes. 25 stays as a sanity floor: below it the sentence-end cut
+  // in 03-generation.js has nothing to work with.
+  return { enabled: enabled, tokens: Math.max(25, raw) };
+}
+
+/* How a character spends its context, and when lore compression fires
+   (roadmap 1.7.7 #6d). Four percentages that were constants in
+   buildContextMessages (js/08-rag.js):
+
+     contextInputPercent  of the context the prompt may use       (90)
+     contextReplyPercent  of that kept free for the reply: when   (20)
+                          less is left, compression starts
+     contextLandPercent   of that, where compression brings the   (65)
+                          chat back down to
+     contextKeepPercent   of that, the most recent turns, which   (22)
+                          are never summarised
+
+   Per character, falling back to the setting (presettable from gobbonet.toml's
+   [ui] table), falling back to the old constant -- so nothing moves for anyone
+   who leaves them alone. A card field that is blank, null or absent INHERITS;
+   0 is a real value for the two that allow it.
+
+   The four are not independent, and some combinations stall compression
+   rather than merely tuning it:
+     - a landing point at or above where compression starts frees almost
+       nothing, so it fires again on every message;
+     - a verbatim reserve at or above the landing point means compression can
+       never get down to it.
+   So each is clamped to its own range, then to its neighbours with a 5-point
+   gap, in a fixed order (reply, then land, then keep). Every adjustment is
+   reported in `notes`, which the card editor shows -- a number quietly changed
+   on its way to being used is the thing #6 exists to stop.
+
+   Read by buildContextMessages AND by updateContextInfo (js/13-dashboard.js),
+   whose meter shows how close a chat is to compressing; they used to carry
+   separate copies of 0.9 and 0.20 with a "keep these in sync" comment. */
+const CONTEXT_BUDGET_RANGES = {
+  contextInputPercent: { min: 10, max: 99, fallback: 90, name: 'Input budget' },
+  contextReplyPercent: { min: 0,  max: 60, fallback: 20, name: 'Reply room' },
+  contextLandPercent:  { min: 10, max: 95, fallback: 65, name: 'Land at' },
+  contextKeepPercent:  { min: 0,  max: 90, fallback: 22, name: 'Keep verbatim' },
+};
+function _contextPercent(card, key) {
+  const fromCard = card ? card[key] : undefined;
+  if (fromCard !== '' && fromCard !== null && fromCard !== undefined && isFinite(Number(fromCard))) {
+    return Number(fromCard);
+  }
+  const s = state.settings ? Number(state.settings[key]) : NaN;
+  return isFinite(s) ? s : CONTEXT_BUDGET_RANGES[key].fallback;
+}
+function resolveContextBudget(card) {
+  const notes = [];
+  const pct = {};
+  for (const key of Object.keys(CONTEXT_BUDGET_RANGES)) {
+    const r = CONTEXT_BUDGET_RANGES[key];
+    const want = Math.round(_contextPercent(card, key));
+    const got = Math.min(r.max, Math.max(r.min, want));
+    if (got !== want) notes.push(`${r.name} ${want}% is outside ${r.min}–${r.max}%, so ${got}% is used.`);
+    pct[key] = got;
+  }
+  const landMax = 100 - pct.contextReplyPercent - 5;
+  if (pct.contextLandPercent > landMax) {
+    notes.push(`Land at ${pct.contextLandPercent}% would be at or above where compression starts `
+      + `(${100 - pct.contextReplyPercent}%, with ${pct.contextReplyPercent}% reply room), so it would fire `
+      + `on every message. ${landMax}% is used.`);
+    pct.contextLandPercent = landMax;
+  }
+  const keepMax = pct.contextLandPercent - 5;
+  if (pct.contextKeepPercent > keepMax) {
+    notes.push(`Keep verbatim ${pct.contextKeepPercent}% would be at or above the landing point `
+      + `(${pct.contextLandPercent}%), so compression could never reach it. ${keepMax}% is used.`);
+    pct.contextKeepPercent = keepMax;
+  }
+  return {
+    input: pct.contextInputPercent / 100,
+    reply: pct.contextReplyPercent / 100,
+    land:  pct.contextLandPercent / 100,
+    keep:  pct.contextKeepPercent / 100,
+    percent: pct,
+    notes: notes,
+  };
 }
 
 const DEFAULT_SETTINGS = {
@@ -175,6 +265,20 @@ const DEFAULT_SETTINGS = {
   apiKey: '',
   cotTimeoutEnabled: false,
   cotTimeoutMinutes: 2,
+  // Were constants until roadmap 1.7.7 #6b/#6c; the defaults are the old
+  // values, so nothing changes for anyone who leaves them alone. Read through
+  // autoContinueDelayMs() / autoContinueMaxChain() (09-threads.js) and
+  // loreTimeoutMs() (07-prompt.js), never directly -- those own the fallbacks.
+  autoContinueDelaySeconds: 20,   // pause between auto-continued posts
+  autoContinueMaxChain: 50,       // most posts one {{auto_continue_N}} may run
+  loreTimeoutSeconds: 45,         // longest one lore compression pass may take
+  // Roadmap 1.7.7 #6d: the context budget, as percentages. The defaults are
+  // the old constants. Per character on the card; these are what a card
+  // that leaves a field blank inherits. Read through resolveContextBudget().
+  contextInputPercent: 90,       // of the context the prompt may use
+  contextReplyPercent: 20,       // of that kept free for the reply
+  contextLandPercent: 65,        // where compression brings the chat back to
+  contextKeepPercent: 22,        // most recent turns never summarised
   smartLimitEnabled: false,   // cap AI reply length (rough token estimate, sentence-end cut)
   smartLimitTokens: 300,      // max estimated tokens per reply when the cap is on
   avatarScale: 1,             // avatar size multiplier (CONFIG slider; 1 = default)

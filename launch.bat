@@ -1238,11 +1238,18 @@ if !HW_VRAM! gtr 0 if !PICK_MIN! gtr 0 if !HW_VRAM! lss !PICK_MIN! (
     echo.
 )
 
+:: MODEL_TAGS sorts each model into the Add a Model window's buckets
+:: (roadmap 1.7.7): coding, roleplay, jack-of-all-trades. launch.bat
+:: itself never reads it; installer/gen-catalog.py carries it into
+:: models.ini, the same way it carries DL_SHA256. A model can be in more
+:: than one bucket (comma-separated), and one in none still shows under
+:: ALL MODELS.
 if "!MODEL_CHOICE!"=="1" (
     set "DL_REPO=bartowski/google_gemma-4-E4B-it-GGUF"
     set "DL_FILE=google_gemma-4-E4B-it-Q4_K_M.gguf"
     set "MODEL_ID=gemma4-e4b"
     set "MODEL_DISPLAY=Gemma 4 E4B IT"
+    set "MODEL_TAGS=jack-of-all-trades"
     set "MODEL_FAMILY=gemma"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=none"
@@ -1255,6 +1262,7 @@ if "!MODEL_CHOICE!"=="2" (
     set "DL_FILE=Llama-3.2-3B-Instruct-Q8_0.gguf"
     set "MODEL_ID=llama32-3b"
     set "MODEL_DISPLAY=Llama 3.2 3B Instruct"
+    set "MODEL_TAGS=jack-of-all-trades"
     set "MODEL_FAMILY=llama"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=none"
@@ -1267,6 +1275,7 @@ if "!MODEL_CHOICE!"=="3" (
     set "DL_FILE=Mistral-7B-Instruct-v0.3-Q6_K.gguf"
     set "MODEL_ID=mistral-7b"
     set "MODEL_DISPLAY=Mistral 7B v0.3"
+    set "MODEL_TAGS=roleplay"
     set "MODEL_FAMILY=mistral"
     set "MODEL_MAX_CTX=32768"
     set "MODEL_THINK_FMT=none"
@@ -1279,6 +1288,7 @@ if "!MODEL_CHOICE!"=="4" (
     set "DL_FILE=Qwen_Qwen3.5-9B-Q4_K_M.gguf"
     set "MODEL_ID=qwen35-9b"
     set "MODEL_DISPLAY=Qwen3.5 9B"
+    set "MODEL_TAGS=coding"
     set "MODEL_FAMILY=qwen"
     set "MODEL_MAX_CTX=131072"
     rem Qwen3.5 emits reasoning between [think] tags like the rest of the
@@ -1294,6 +1304,7 @@ if "!MODEL_CHOICE!"=="5" (
     set "DL_FILE=google_gemma-4-26B-A4B-it-Q4_K_S.gguf"
     set "MODEL_ID=gemma4-26b"
     set "MODEL_DISPLAY=Gemma 4 26B-A4B MoE"
+    set "MODEL_TAGS=roleplay,jack-of-all-trades"
     set "MODEL_FAMILY=gemma"
     set "MODEL_MAX_CTX=262144"
     set "MODEL_THINK_FMT=gemma"
@@ -1306,6 +1317,7 @@ if "!MODEL_CHOICE!"=="6" (
     set "DL_FILE=Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
     set "MODEL_ID=qwen36-35b"
     set "MODEL_DISPLAY=Qwen3.6 35B-A3B MoE"
+    set "MODEL_TAGS=coding,jack-of-all-trades"
     set "MODEL_FAMILY=qwen"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=deepseek"
@@ -1326,6 +1338,7 @@ if "!MODEL_CHOICE!"=="7" (
     set "DL_FILE=deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q8_0.gguf"
     set "MODEL_ID=deepseek-r1-8b"
     set "MODEL_DISPLAY=DeepSeek-R1 8B"
+    set "MODEL_TAGS=coding"
     set "MODEL_FAMILY=deepseek"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=deepseek"
@@ -1340,6 +1353,7 @@ if "!MODEL_CHOICE!"=="8" (
     set "DL_FILE=gpt-oss-20b-MXFP4.gguf"
     set "MODEL_ID=gpt-oss-20b"
     set "MODEL_DISPLAY=gpt-oss 20B"
+    set "MODEL_TAGS=coding,jack-of-all-trades"
     set "MODEL_FAMILY=gpt-oss"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=harmony"
@@ -1352,6 +1366,7 @@ if "!MODEL_CHOICE!"=="9" (
     set "DL_FILE=c4ai-command-r7b-12-2024-Q6_K.gguf"
     set "MODEL_ID=command-r7b"
     set "MODEL_DISPLAY=Command R 7B (12-2024)"
+    set "MODEL_TAGS=jack-of-all-trades"
     set "MODEL_FAMILY=cohere"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=none"
@@ -1364,6 +1379,7 @@ if "!MODEL_CHOICE!"=="10" (
     set "DL_FILE=c4ai-command-r-08-2024-Q4_K_S.gguf"
     set "MODEL_ID=command-r-35b"
     set "MODEL_DISPLAY=Command R 35B (08-2024)"
+    set "MODEL_TAGS=roleplay"
     set "MODEL_FAMILY=cohere"
     set "MODEL_MAX_CTX=131072"
     set "MODEL_THINK_FMT=none"

@@ -242,6 +242,17 @@ func builtInSource(exe string) webSource {
 			src.Notes = append(src.Notes, fmt.Sprintf(
 				"wrote the chat interface to %s (%d files) so you can read and edit it. "+
 					"Edits show up on reload.", dir, n))
+		case previous == version:
+			// Same version, different built-in page: a build re-cut without a
+			// version change (1.7.7 #13). Before, this case was not detected at
+			// all and the old page went on being served. Said out loud for the
+			// same reason as below.
+			src.Notes = append(src.Notes, fmt.Sprintf(
+				"refreshed %s (%d files): this build of %s carries a different interface "+
+					"from the one an earlier build of the same version wrote there. Any edits "+
+					"you made there have been replaced -- that is how an update reaches the "+
+					"interface. To keep edits across updates, copy them elsewhere and set "+
+					"web_root to that folder.", dir, n, version))
 		default:
 			// A version change replaces the tree, which is how an update reaches
 			// the interface -- and it is also how someone's edits disappear, so

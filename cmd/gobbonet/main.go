@@ -515,7 +515,10 @@ func cmdServe(argv []string) error {
 	// that fails first behind a Host-header check or a split-horizon DNS
 	// setup.
 	if *openTab {
-		setup.OpenBrowser(fmt.Sprintf("http://127.0.0.1:%d/", bind.Port))
+		// LocalURL is 127.0.0.1 in every ordinary case. It differs only when
+		// a pinned address could not get its loopback companion (see
+		// Bind.Loopback), where 127.0.0.1 would land on a connection error.
+		setup.OpenBrowser(bind.LocalURL())
 	}
 
 	// Stop the managed llama-server however this function ends, not only on

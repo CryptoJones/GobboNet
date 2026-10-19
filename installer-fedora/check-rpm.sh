@@ -269,8 +269,12 @@ if [ -f "$ROOT/installer-linux/gobbonet-launch" ]; then
     [ "$changed" = 4 ] \
         && ok "wizard.html differs from installer-linux/ in exactly its two Fedora lines" \
         || bad "wizard.html differs from installer-linux/ in $changed changed lines, expected 4 (2 out, 2 in)"
-    if [ -x "$ROOT/verify-payload.sh" ]; then
-        if report="$("$ROOT/verify-payload.sh" "$TMP$LIB" "packaged payload" 2>&1)"; then
+    # -f, not -x. Keyed on the executable bit, this skipped the payload check
+    # SILENTLY in every checkout -- the bit does not survive a commit made from
+    # Windows, and the script had never had it. Run through bash for the same
+    # reason.
+    if [ -f "$ROOT/verify-payload.sh" ]; then
+        if report="$(bash "$ROOT/verify-payload.sh" "$TMP$LIB" "packaged payload" 2>&1)"; then
             ok "packaged payload matches payload.manifest"
         else
             bad "packaged payload does not match payload.manifest: $(tr -s ' \n' ' ' <<<"$report")"

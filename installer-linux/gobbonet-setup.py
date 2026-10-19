@@ -126,7 +126,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 state.update(data_dir=get('data_dir'), listen_port=int(get('listen_port')),
                              model_dir=get('model_dir'))
                 self.reply(code, state)
-            elif self.path == '/api/download':
+            elif self.path in ('/api/download', '/api/gpu'):
                 self.reply(*proxy(self.path))
             else:
                 self.reply(404, {'error': 'Not found'})

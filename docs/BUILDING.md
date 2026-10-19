@@ -17,9 +17,21 @@ against the tree as it ships except where marked.
 
 ```sh
 ./build-release.sh                    # Go binaries, stamped from VERSION
-cd installer       && ./build-installer.sh    # GobboNetSetup-1.7.4-go-<sha>.exe
-cd ../installer-linux && ./build-deb.sh       # gobbonet_1.7.4+go.<sha>-1_amd64.deb
+# Windows: installer-win/ -- stage the payload, then makensis (installer-win/README.md)
+cd installer-linux && ./build-deb.sh  # gobbonet_<VERSION>+go.<sha>-1_amd64.deb
 ```
+
+**The Windows installer is `installer-win/`, not `installer/`.** It is the dark
+installer: Welcome, Destination, Password, Port, Install, the Defender notice,
+then Finish with *Launch GobboNet* and *Set up phone access*. The first launch
+opens `launch.bat` in a console window, which fetches llama.cpp, detects the
+hardware and offers the model list. It is the Windows installer from 1.7.0 on,
+1.7.4 apart (below).
+
+`installer/` is a separate design that was never meant to ship. It chooses a
+backend and downloads a model during setup. It was built by mistake for 1.7.4,
+and again for the first 1.7.7 test build, and both times it was the wrong
+installer. Do not build it for a release.
 
 The Debian revision — the `-1` — counts PACKAGING-only changes to one upstream
 version and resets when `VERSION` moves. `build-deb.sh` defaults it to 1 so a
@@ -34,9 +46,16 @@ It used to be the literal `-3`, left over from 1.7.3's three packaging repairs,
 which meant 1.7.4 shipped claiming two earlier Debian revisions that never
 existed.
 
-`VERSION` is the single input to all three — it already says `1.7.4`. Tag
-`v1.7.4` before building, or `TestVersionFileMatchesUpstreamRelease` will fail:
+`VERSION` is the single input to all three. Tag `v` + `VERSION` (for 1.7.7,
+`v1.7.7`) before building, or `TestVersionFileMatchesUpstreamRelease` will fail:
 it compares `VERSION` against the nearest git tag, on purpose.
+
+Two places carry the number as a literal and move with `VERSION`. A test fails
+if either is left behind:
+
+- `GOBBONET_UI_VERSION` in `js/01-config.js` (`tests/test-version-stamp.mjs`);
+- `APPVER`, `OutFile` and `VIProductVersion` in `installer-win/gobbonet.nsi`
+  (`tests/test-version-strings.py`).
 
 ---
 
@@ -112,9 +131,11 @@ the tree, and all five JS modules changed this release reach the payload.
 `gobbonet_1_7_go_9051875-1_amd64.deb`: same paths, same `usr/lib/gobbonet/`
 layout, same `usr/bin/gobbonet` shim, same `web/` placement.
 
-**`VERSION`** — `1.7.4`, and it is the only version literal. `build-release.sh`,
-`build-installer.sh` and `build-deb.sh` all read it; the `.nsi` takes it as a
-`-D` define and hardcodes nothing.
+**`VERSION`** — read by `build-release.sh`, `build-installer.sh` and
+`build-deb.sh`; `installer/gobbonet.nsi` takes it as a `-D` define and hardcodes
+nothing. (This section was verified for 1.7.4. Since then `installer-win/`'s
+script and the page stamp carry literals of their own; see "Order matters"
+above.)
 
 ---
 
@@ -139,9 +160,14 @@ still identifiable after installation. To reuse an engine you already have:
 SKIP_ENGINE_FETCH=1 ./build-deb.sh          # uses installer-linux/vendor/
 BUNDLE_CPU_ENGINE=1  ./build-deb.sh         # also ship the CPU-only archive
 
-SKIP_ENGINE_FETCH=1 ./build-installer.sh    # uses installer/vendor/
+SKIP_ENGINE_FETCH=1 ./build-installer.sh    # installer/ only, which does not ship
 LLAMA_CPP=/path/to/llama-cpp ./build-installer.sh   # bypasses the pin
 ```
+
+The Windows installer (`installer-win/`) bundles no engine. `launch.bat`
+downloads one on first launch and checks it against its own pin,
+`LLAMA_PIN_TAG` and `LLAMA_PIN_SHA256` near the top of the file. That pin is
+separate from `engine.sha256`.
 
 `LLAMA_CPP=` is the one route that skips verification, because a hand-placed
 directory cannot be hashed against an archive nobody kept. The build says so

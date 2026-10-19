@@ -57,6 +57,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
@@ -86,14 +87,26 @@ const (
 	// until next == size, so a long backlog clears in a few round trips.
 	maxPollBytes = 262144
 
-	// jobTimeout is the hard runtime cap for one generation. Generous — huge
-	// contexts on big models can sit in prompt processing for minutes — but
-	// finite, so a wedged upstream can't leave a job running forever.
+	// There is no fixed cap on how long a generation may run. Until 1.7.7 there
+	// was — jobTimeout, thirty minutes — and it stopped replies that were still
+	// streaming perfectly well. How long a reply may run is the user's call
+	// (roadmap 1.7.7 #4): the page sends its CONFIG limit with each job as
+	// ?max_runtime_s=, and a job that arrives without one runs until it ends,
+	// the user stops it, or a watchdog below decides the upstream is dead.
 	//
-	// It is the outermost bound and deliberately not the only one. Thirty
-	// minutes of a spinner is not meaningfully better than forever to someone
-	// waiting on a reply, so the stages below catch the common wedges first.
-	jobTimeout = 30 * time.Minute
+	// The watchdogs stay because they never cut off a reply that is still
+	// arriving: one waits for a FIRST byte, the other for the NEXT one.
+
+	// pageCapGrace is added to a limit that came from the page. The page runs
+	// the same limit on its own timer while it is open, and that stop carries
+	// the note explaining it; the server's copy exists for the tab that was
+	// closed or the phone that went to sleep. Without the grace the two race,
+	// and a server win shows an error where the user expected the note.
+	pageCapGrace = 15 * time.Second
+
+	// maxRuntimeParam is the longest limit accepted, in seconds — an overflow
+	// guard for time.Duration, not a policy. It is about 290 years.
+	maxRuntimeParam = math.MaxInt64/int64(time.Second) - int64(pageCapGrace/time.Second)
 
 	// dialTimeout is short: either the upstream is there or it isn't. Matches
 	// internal/proxy.
@@ -150,6 +163,9 @@ type Job struct {
 	finishedAt time.Time
 
 	cancel context.CancelFunc
+	// maxRuntime is the limit this job runs under, as the user set it (without
+	// pageCapGrace), so a stop can say which limit it was. Zero means none.
+	maxRuntime time.Duration
 	// done is closed when the worker goroutine returns, which is strictly after
 	// the upstream response body has been closed. That ordering is the whole
 	// value of the channel: a superseding request waits on it to know llama.cpp
@@ -232,11 +248,15 @@ type Manager struct {
 	maxConcurrent int
 	maxAge        time.Duration
 
-	// idle is the tolerated gap between chunks once a stream is flowing, and
-	// maxRuntime the outermost cap on one generation. Fields rather than
-	// constants so tests can shrink them to observable lengths.
+	// idle is the tolerated gap between chunks once a stream is flowing.
+	// maxRuntime caps a job whose request named no limit of its own; it is
+	// zero — no cap — in production since 1.7.7, and exists so tests can drive
+	// the cap path without a request. capGrace is pageCapGrace. All three are
+	// fields rather than constants so tests can shrink them to observable
+	// lengths.
 	idle       time.Duration
 	maxRuntime time.Duration
+	capGrace   time.Duration
 
 	client *http.Client
 
@@ -277,7 +297,8 @@ func NewManager(llmURL, apiKey string, maxConcurrent, maxAgeHours int) *Manager 
 		maxConcurrent: maxConcurrent,
 		maxAge:        time.Duration(maxAgeHours) * time.Hour,
 		idle:          idleTimeout,
-		maxRuntime:    jobTimeout,
+		maxRuntime:    0, // no cap unless the request asks for one
+		capGrace:      pageCapGrace,
 		// No overall client timeout: a generation legitimately runs for a long
 		// time, and http.Client.Timeout covers the whole request INCLUDING the
 		// streaming body read, so any value large enough for a long generation
@@ -285,7 +306,7 @@ func NewManager(llmURL, apiKey string, maxConcurrent, maxAgeHours int) *Manager 
 		//
 		// The bounds are staged instead, matching internal/proxy: a short dial,
 		// a generous wait for the first byte, and a watchdog on the gap between
-		// chunks (see run). maxRuntime remains the outermost cap.
+		// chunks (see run). A total cap applies only when the user set one.
 		client:      newJobClient(dialTimeout, responseHeaderTimeout),
 		jobs:        make(map[string]*Job),
 		cleanupStop: make(chan struct{}),
@@ -482,7 +503,7 @@ func (m *Manager) run(ctx context.Context, job *Job, body []byte) {
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		status, msg := m.terminalFailure(ctx, err)
+		status, msg := m.terminalFailure(ctx, err, job.maxRuntime)
 		job.setStatus(status, msg)
 		return
 	}
@@ -527,7 +548,7 @@ func (m *Manager) run(ctx context.Context, job *Job, body []byte) {
 			}
 			// A cancelled context surfaces here as a read error on the closed
 			// connection; report the cause, not the symptom.
-			status, msg := m.terminalFailure(ctx, readErr)
+			status, msg := m.terminalFailure(ctx, readErr, job.maxRuntime)
 			job.setStatus(status, msg)
 			return
 		}
@@ -543,7 +564,7 @@ func (m *Manager) run(ctx context.Context, job *Job, body []byte) {
 // version of this code reported both as "cancelled" — which told a user their
 // own click had stopped a generation that in fact died on its own, and left the
 // real failure unrecorded anywhere.
-func (m *Manager) terminalFailure(ctx context.Context, err error) (status, message string) {
+func (m *Manager) terminalFailure(ctx context.Context, err error, limit time.Duration) (status, message string) {
 	switch cause := context.Cause(ctx); {
 	case errors.Is(cause, errIdleUpstream):
 		return StatusError, fmt.Sprintf(
@@ -551,8 +572,9 @@ func (m *Manager) terminalFailure(ctx context.Context, err error) (status, messa
 			m.idle)
 
 	case errors.Is(cause, errJobExpired):
+		// limit is the job's own, as the user set it -- not a server constant.
 		return StatusError, fmt.Sprintf(
-			"this generation ran past the %s limit and was stopped.", m.maxRuntime)
+			"this generation ran past its %s runtime limit and was stopped. The limit is set in CONFIG.", limit)
 
 	case ctx.Err() != nil:
 		// A plain cancellation: the caller asked for it.
@@ -657,6 +679,26 @@ func (m *Manager) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The user's runtime limit, when the page sent one (roadmap 1.7.7 #4).
+	// Parsed here, with the body, so a malformed value is refused before
+	// supersede() below can touch the generation already running. 0 means no
+	// limit, the same as leaving it out; anything else unreadable is an error
+	// rather than a silent "no limit".
+	limit, deadline := m.maxRuntime, m.maxRuntime
+	if v := r.URL.Query().Get("max_runtime_s"); v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil || n < 0 || n > maxRuntimeParam {
+			httpx.Error(w, r, http.StatusBadRequest,
+				"max_runtime_s must be a whole number of seconds, 0 for no limit")
+			return
+		}
+		limit = time.Duration(n) * time.Second
+		deadline = 0
+		if limit > 0 {
+			deadline = limit + m.capGrace
+		}
+	}
+
 	// After the body is known good, not before: a malformed request must not be
 	// able to kill a generation the user is actually reading. Upstream sheds
 	// first and parses second, which makes a client bug destructive.
@@ -686,9 +728,16 @@ func (m *Manager) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// WithTimeoutCause, not WithTimeout: hitting the cap is a failure the user
 	// needs told about, and without a cause it is indistinguishable at the
-	// socket from them pressing stop.
-	ctx, cancel := context.WithTimeoutCause(context.Background(), m.maxRuntime, errJobExpired)
+	// socket from them pressing stop. No limit, no deadline at all.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if deadline > 0 {
+		ctx, cancel = context.WithTimeoutCause(context.Background(), deadline, errJobExpired)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	job.cancel = cancel
+	job.maxRuntime = limit
 
 	var release func()
 	if m.Acquire != nil {

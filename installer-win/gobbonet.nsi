@@ -30,7 +30,7 @@ Unicode true
 !endif
 
 !define APPNAME     "GobboNet"
-!define APPVER      "1.7.6"
+!define APPVER      "1.7.7"
 ; 1.3 shipped launch.exe / launchLAN.exe: small C shims whose only job was to
 ; locate the install folder and ShellExecute a .bat. They are gone. The
 ; shortcuts and the finish-page checkboxes point at the batch files directly,
@@ -42,7 +42,7 @@ Unicode true
 !define REGKEY      "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
 Name              "${APPNAME}"
-OutFile           "GobboNetSetup-1_7_6.exe"
+OutFile           "GobboNetSetup-1_7_7.exe"
 InstallDir        "$LOCALAPPDATA\${APPNAME}"
 InstallDirRegKey  HKCU "Software\${APPNAME}" "InstallDir"
 RequestExecutionLevel user
@@ -50,7 +50,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails   show
 ShowUninstDetails show
 
-VIProductVersion "1.7.6.0"
+VIProductVersion "1.7.7.0"
 VIAddVersionKey  "ProductName"     "${APPNAME}"
 VIAddVersionKey  "FileDescription" "${APPNAME} Installer"
 VIAddVersionKey  "FileVersion"     "${APPVER}.0"
@@ -531,6 +531,14 @@ If it will not close, a reboot always clears it." \
   File "${APPSRC}\hardware-probe.ps1"
   File "${APPSRC}\identify-model.ps1"
   File "${APPSRC}\hw-recommend.ps1"
+  ; models.ini (1.7.7): the bundled model list, generated from launch.bat by
+  ; installer/gen-catalog.py. gobbonet.exe looks for it beside itself
+  ; (internal/catalog/discover.go). CONFIG > Add a Model falls back to it when
+  ; goblincorps.com cannot be reached, and its Coding / Roleplay / Jack of all
+  ; trades buttons take each model's type from it until the live list carries
+  ; the tags. Without it an installed copy had neither: no list offline, and
+  ; every type button empty.
+  File "${APPSRC}\models.ini"
   File "${APPSRC}\chat.html"
   File "${APPSRC}\default-characters.json"
   File "${APPSRC}\LICENSE"
@@ -752,6 +760,7 @@ report that the folder is still open in another program." \
   Delete "$INSTDIR\hardware-probe.ps1"
   Delete "$INSTDIR\identify-model.ps1"
   Delete "$INSTDIR\hw-recommend.ps1"
+  Delete "$INSTDIR\models.ini"
   Delete "$INSTDIR\chat.html"
   Delete "$INSTDIR\default-characters.json"
   Delete "$INSTDIR\LICENSE"

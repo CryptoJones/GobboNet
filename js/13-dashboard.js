@@ -162,7 +162,28 @@ function renderMessages() {
 
   if (!thread) {
     title.textContent = 'GOBBONET';
+    // Keep every scroll position across the rebuild. The landing page is not
+    // only drawn once: js/24-boot.js re-renders it every five seconds to
+    // refresh the connection pill, and the innerHTML rebuild below creates
+    // fresh scroll boxes at 0. A list scrolled down and left alone snapped
+    // back to the top by itself within five seconds.
+    //
+    // Only when the landing page is ALREADY showing: arriving from a thread
+    // must not inherit that thread's position. The lists match by order,
+    // which is safe because renderLandingPage() always draws the same three
+    // (scheduled tasks, your characters, default characters), empty or not.
+    //
+    // Reported, with the fix, by larckdrakengold; extended here to the
+    // scheduled-tasks list, which had the same bug. Roadmap 1.7.7 item #2.
+    const LANDING_SCROLLERS = '.landing-sched-list, .landing-char-list';
+    const wasLanding = !!container.querySelector('.landing-page');
+    const pageTop = container.scrollTop;
+    const listTops = [...container.querySelectorAll(LANDING_SCROLLERS)].map(l => l.scrollTop);
     container.innerHTML = renderLandingPage();
+    if (wasLanding) {
+      container.scrollTop = pageTop;
+      container.querySelectorAll(LANDING_SCROLLERS).forEach((l, i) => { l.scrollTop = listTops[i] || 0; });
+    }
     const homeBtn = document.getElementById('home-btn');
     if (homeBtn) homeBtn.classList.add('hidden');
     return;
@@ -1037,12 +1058,14 @@ function updateContextInfo() {
   const loreTokens = authoredLoreTokens + summaryTokens;
 
   const projected = systemTokens + personalityTokens + liveTokens + loreTokens;
-  const budget    = Math.floor(resolveContextLimit(card) * 0.9);
-  // Mirror RESPONSE_RESERVE_FACTOR from buildContextMessages — keep these
-  // in sync. Showing % against `effectiveBudget` makes the readout track
-  // the actual compression trigger; otherwise users see compression fire
-  // at ~80% and wonder why.
-  const effectiveBudget = budget - Math.floor(budget * 0.20);
+  // Same resolver as buildContextMessages, so the meter cannot drift from the
+  // real trigger: these were separate copies of 0.9 and 0.20 until roadmap
+  // 1.7.7 #6d made them per character. Showing % against `effectiveBudget`
+  // makes the readout track the actual compression trigger; otherwise users
+  // see compression fire at ~80% and wonder why.
+  const ctxBudget = resolveContextBudget(card);
+  const budget    = Math.floor(resolveContextLimit(card) * ctxBudget.input);
+  const effectiveBudget = budget - Math.floor(budget * ctxBudget.reply);
   const pct       = effectiveBudget > 0 ? Math.round((projected / effectiveBudget) * 100) : 0;
 
   // Format: "~projected / effectiveBudget tok (pct%)" so the percentage

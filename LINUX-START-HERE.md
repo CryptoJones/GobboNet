@@ -1,6 +1,6 @@
-# GobboNet 1.7.6 — Linux
+# GobboNet 1.7.7 — Linux
 
-Install the Debian package with `sudo apt install ./gobbonet_1.7.6+go.nogit.*_amd64.deb`, then run `gobbonet` as your normal user or select GobboNet in the application menu. On Fedora, install the RPM instead: `sudo dnf install ./gobbonet-1.7.6-*.fedora.x86_64.rpm` (see `installer-fedora/FEDORA.md`).
+Install the Debian package with `sudo apt install ./gobbonet_1.7.7+go.*_amd64.deb`, then run `gobbonet` as your normal user or select GobboNet in the application menu. On Fedora, install the RPM instead: `sudo dnf install ./gobbonet-1.7.7-*.fedora.x86_64.rpm` (see `installer-fedora/FEDORA.md`).
 
 For the ZIP, extract it, open a terminal in GobboNet and run `./gobbonet`. The ZIP includes a Linux amd64 runtime and the editable source. It needs Python 3.8+, Bash, coreutils, xdg-utils and the same engine libraries listed in the Debian package. Keep the extracted folder in place while using it. Do not run the application with sudo.
 
@@ -13,6 +13,8 @@ Editing `chat.html`, `js/` or `css/` at the root of the ZIP changes nothing by i
 ## First launch
 
 Welcome → data/model location → password → web port → firewall explanation → local or LAN launch → bundled llama.cpp engine → model picker and download → optional Nomic embeddings → LAUNCH.
+
+New in 1.7.7: picking a model that needs more GPU memory than the graphics card has asks before downloading it, as `launch.bat` does on Windows. If the card cannot be read, nothing is asked.
 
 The wizard opens in your default browser. The chat opens automatically after the server starts listening. Large models can take several minutes to load. Reopening GobboNet opens the existing chat instead of starting a second server. The terminal remains attached to the server; Ctrl+C stops it and the optional embedding engine.
 

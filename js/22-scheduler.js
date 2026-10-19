@@ -710,3 +710,15 @@ function closeAbout() {
   document.getElementById('about-modal').classList.remove('open');
 }
 
+/* MODS and DISCORD in the ABOUT panel (roadmap 1.7.7 item #3).
+
+   Buttons rather than links, for the reason given in the markup. noopener:
+   the opened page gets no window.opener, so it cannot navigate or script this
+   one. noreferrer: it is not told which address this was opened from -- on a
+   LAN that is the PC's private IP, and it has no business leaving the house.
+   With noopener, window.open returns null by design, so null is not a failure
+   and is not checked. */
+function openAboutLink(url) {
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+

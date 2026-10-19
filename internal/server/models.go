@@ -117,6 +117,9 @@ type catalogEntry struct {
 	MinVRAM   int     `json:"minVRAM"`
 	Ctx       int     `json:"ctx"`
 	Installed bool    `json:"installed"`
+	// Buckets are the window's types this model is in -- coding, roleplay,
+	// jack-of-all-trades (roadmap 1.7.7). Empty puts it under ALL MODELS only.
+	Buckets []string `json:"buckets"`
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
@@ -164,6 +167,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			MinVRAM:   e.MinVRAM,
 			Ctx:       e.Ctx,
 			Installed: installed[e.File],
+			Buckets:   nonNil(e.BucketTags()),
 		})
 	}
 
@@ -504,4 +508,13 @@ func (s *Server) catalogNotes() []string {
 	out := make([]string, len(s.catNotes))
 	copy(out, s.catNotes)
 	return out
+}
+
+// nonNil keeps an empty list a list on the wire: the page reads "buckets" as an
+// array, and null would need a second case for nothing.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

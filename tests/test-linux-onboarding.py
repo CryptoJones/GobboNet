@@ -1,5 +1,9 @@
 import os, pathlib, subprocess, tempfile, time, json, urllib.request, urllib.error, socket, signal
 ROOT=pathlib.Path(__file__).resolve().parents[1]; PREFIX=pathlib.Path(os.environ.get('GOBBONET_TEST_PREFIX', str(ROOT/'linux-amd64')))
+# What a user runs. The packages' launcher by default; point GOBBONET_TEST_ENTRY
+# at an extracted ZIP's top-level ./gobbonet to run the same first run through
+# the ZIP's front door (roadmap 1.7.7 #14).
+ENTRY=os.environ.get('GOBBONET_TEST_ENTRY', str(PREFIX/'gobbonet-launch'))
 http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def freeport():
     with socket.socket() as s: s.bind(('127.0.0.1',0)); return s.getsockname()[1]
@@ -9,7 +13,7 @@ def test(lan):
         fake=d/'bin';fake.mkdir(); browser=d/'browser.log'
         (fake/'xdg-open').write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$BROWSER_LOG"\n');(fake/'xdg-open').chmod(0o755)
         env.update(PATH=str(fake)+':'+env['PATH'],BROWSER_LOG=str(browser))
-        p=subprocess.Popen([str(PREFIX/'gobbonet-launch')],env=env,start_new_session=True)
+        p=subprocess.Popen([ENTRY],env=env,start_new_session=True)
         try:
             for _ in range(100):
                 if browser.exists(): break
@@ -39,12 +43,17 @@ def test(lan):
             response=http.open(urls[-1]+'login');assert response.status==200
             cfg=(d/'config/gobbonet/config.toml').read_text();assert ('0.0.0.0' if lan else '127.0.0.1') in cfg
             # A second launch reuses the running server and opens chat, no wizard.
-            repeat=subprocess.run([str(PREFIX/'gobbonet-launch')],env=env,timeout=15)
+            repeat=subprocess.run([ENTRY],env=env,timeout=15)
             assert repeat.returncode==0
             assert browser.read_text().splitlines()[-1]==urls[-1]
             assert (d/'chosen folder/setup-complete.json').exists()
             print('PASS: first run, location with spaces, password, port rejection/custom port, missing-model guard, remote switch, '+('LAN' if lan else 'local')+', auto-open, repeat launch',flush=True)
         finally:
-            os.killpg(p.pid,signal.SIGTERM)
+            # The launcher may already be gone -- that is usually WHY we are in
+            # here. killpg on a group with nothing left in it raises
+            # ProcessLookupError, which used to replace the real failure as the
+            # error the run reported.
+            try: os.killpg(p.pid,signal.SIGTERM)
+            except ProcessLookupError: pass
             p.wait(timeout=15)
 for lan in (False,True):test(lan)

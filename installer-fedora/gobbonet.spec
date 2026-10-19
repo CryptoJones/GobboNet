@@ -328,6 +328,15 @@ fi
 %{_datadir}/icons/hicolor/256x256/apps/gobbonet.png
 
 %changelog
+* Tue Oct 13 2026 GobboNet - 1.7.7-1
+- 1.7.7. Same package layout, launcher and engine (llama.cpp b10456).
+- gobbonet uninstall ends by naming "sudo dnf remove gobbonet" on this
+  package, where it used to say apt (deferred from 1.7.6 for a new binary).
+- Setup wizard: picking a model that needs more GPU memory than the card has
+  asks before downloading; the model step names the folder actually chosen at
+  Install location, not the one the wizard loaded with.
+- models.ini carries model types, for CONFIG > Add a Model's filters.
+
 * Thu Sep 24 2026 GobboNet - 1.7.6-1
 - 1.7.6. The chat page is compiled into the server, so there is no web/.
 - Fedora 45 and later: requirements are generated from the engine's own

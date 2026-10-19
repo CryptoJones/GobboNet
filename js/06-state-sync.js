@@ -974,6 +974,30 @@ function getCardSamplerParams(card) {
   };
 }
 
+/* The per-character thinking switch (roadmap 1.7.7 #9), as request fields.
+
+   Off sends chat_template_kwargs.enable_thinking = false. llama-server (pinned
+   b10456, tools/server/server-common.cpp) reads that per request and hands it
+   to the model's chat template; a template that supports it answers without
+   its reasoning step, and one that does not ignores it. It must be a real JSON
+   boolean -- the engine REJECTS the request if it arrives as the string
+   "false" -- which is why this builds an object rather than a string.
+
+   On, which is the default and what every card had before this setting
+   existed, sends nothing at all: the request is byte-identical to before.
+   Read as `!== false`, so a card from an older install or another app (no
+   field) thinks, as it always did.
+
+   Models trained to always reason (DeepSeek-R1 distills; gpt-oss, which can be
+   turned down but not off) may think anyway. The card editor says so. */
+function cardThinkingEnabled(card) {
+  return !(card && card.thinkingEnabled === false);
+}
+function getCardThinkingParams(card) {
+  card = card || getActiveCard();
+  return cardThinkingEnabled(card) ? {} : { chat_template_kwargs: { enable_thinking: false } };
+}
+
 /**
  * Family-aware STOP STRINGS.
  *

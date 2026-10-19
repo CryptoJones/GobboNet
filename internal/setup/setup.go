@@ -37,6 +37,7 @@ import (
 	"github.com/ElodineOfficial/GobboNet/internal/autostart"
 	"github.com/ElodineOfficial/GobboNet/internal/catalog"
 	"github.com/ElodineOfficial/GobboNet/internal/config"
+	"github.com/ElodineOfficial/GobboNet/internal/engine"
 	"github.com/ElodineOfficial/GobboNet/internal/modelfetch"
 )
 
@@ -95,6 +96,14 @@ type server struct {
 
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
+
+	// The engine's device list, for the oversized-model warning (roadmap
+	// 1.7.7 #8a). Started with the wizard so the answer is ready by the model
+	// step, several screens later; gpuDone closes when it is in.
+	gpuOnce sync.Once
+	gpuDone chan struct{}
+	gpuDevs []engine.Device
+	gpuErr  error
 }
 
 // Run serves the wizard and returns when the user finishes it.
@@ -125,6 +134,8 @@ func Run(opts Options) (Result, error) {
 		passwordSet: auth.SecretConfigured(cfg.AccessSecret),
 		shutdown:    make(chan struct{}),
 	}
+
+	s.gpuOnce.Do(s.startGPUProbe)
 
 	// Loopback, kernel-assigned port. Not cfg.ListenHost: that is 0.0.0.0 by
 	// compiled-in default and is exactly what must not happen here.
@@ -173,7 +184,66 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/backend", s.handleBackend)
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/finish", s.handleFinish)
+	mux.HandleFunc("/api/gpu", s.handleGPU)
 	return mux
+}
+
+func (s *server) startGPUProbe() {
+	s.gpuDone = make(chan struct{})
+	go func() {
+		defer close(s.gpuDone)
+		s.gpuDevs, s.gpuErr = engine.ProbeDevices(s.opts.ServerExe)
+	}()
+}
+
+// gpuResponse is what the wizard compares a model's min_vram against.
+//
+// Known is false whenever there is nothing honest to compare: no engine, a
+// probe that failed or timed out, no GPU listed, or only an integrated GPU,
+// whose memory is a share of system RAM. The wizard then says nothing --
+// launch.bat's rule: never block on a failed probe.
+type gpuResponse struct {
+	Known   bool            `json:"known"`
+	VRAMGB  int             `json:"vram_gb"`
+	Device  string          `json:"device,omitempty"`
+	Devices []engine.Device `json:"devices"`
+	Note    string          `json:"note,omitempty"`
+}
+
+// gpuWait bounds how long the model step waits for a probe still running. The
+// probe has its own, shorter timeout; this is the backstop.
+var gpuWait = 30 * time.Second
+
+func (s *server) handleGPU(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "GET only.")
+		return
+	}
+	s.gpuOnce.Do(s.startGPUProbe)
+	resp := gpuResponse{Devices: []engine.Device{}}
+	select {
+	case <-s.gpuDone:
+	case <-time.After(gpuWait):
+		resp.Note = "still checking the GPU"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	case <-r.Context().Done():
+		return
+	}
+	if s.gpuDevs != nil {
+		resp.Devices = s.gpuDevs
+	}
+	switch d := engine.DedicatedGPU(s.gpuDevs); {
+	case s.gpuErr != nil:
+		resp.Note = s.gpuErr.Error()
+	case d != nil:
+		resp.Known, resp.VRAMGB, resp.Device = true, engine.NominalGB(d.TotalMiB), d.Name
+	case len(s.gpuDevs) == 0:
+		resp.Note = "the engine lists no GPU"
+	default:
+		resp.Note = "only an integrated GPU, which shares system memory"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {

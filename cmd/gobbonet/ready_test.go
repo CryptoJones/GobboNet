@@ -36,4 +36,11 @@ func TestReadyPanelAddressesReflectActualListener(t *testing.T) {
 	if strings.Contains(b.String(), "127.0.0.1") {
 		t.Fatal("specific interface bind advertised unbound loopback")
 	}
+	// 1.7.7 #7: a pinned address keeps loopback beside it, and this PC is
+	// then told to use loopback, as it is everywhere else.
+	b.Reset()
+	printReadyPanel(&b, config.Config{}, &server.Bind{Host: "192.168.1.20", Port: 9067, Loopback: "127.0.0.1"}, addrs[1:2])
+	if !strings.Contains(b.String(), "ON THIS PC\n    http://127.0.0.1:9067/") {
+		t.Fatalf("pinned bind with loopback served did not offer it on this PC:\n%s", b.String())
+	}
 }

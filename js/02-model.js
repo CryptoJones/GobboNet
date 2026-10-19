@@ -758,18 +758,38 @@ async function _restartModelForPerf() {
 let _catalogPoll = null;
 let _catalogDownloadedFile = null;
 
-/* TEMPORARY HOLD — the download/swap path is known-bugged and is being fixed
-   in a later patch. Until then the button is shown disabled and labelled as
-   not working, rather than left live to fail in the user's hands.
+/* THE HOLD — set false to take the button out of use again.
+
+   It was false from 1.7 until 1.7.7: the download/swap path was known-bugged,
+   so the button read NOT WORKING YET, disabled. Roadmap 1.7.7 #8b turned it
+   back on so the path can be tested on real installs -- the maintainer's
+   choice, after a URL switch for testing proved too hidden to use.
 
    This is deliberately ONE flag and nothing else. The modal, the catalogue
    fetch, the progress polling and the swap are all left exactly as they are,
-   so the fix patch flips this to `true` and the feature comes back whole. Do
-   not start deleting the code path it gates.
+   so flipping it is all it takes either way. If testing ends in the path being
+   retired, this is the switch that does it while the code goes.
 
    `let` rather than `const` so the test suite can drive both states and prove
    the flip is all that is needed. */
-let MODEL_CATALOG_ENABLED = false;
+let MODEL_CATALOG_ENABLED = true;
+
+/* Live, but not confirmed working. While this is false the box says so under
+   the button, and says where to look when a download fails. Set it true once
+   the test matrix in docs/INVESTIGATION-in-app-downloads.md has passed. */
+let MODEL_CATALOG_CONFIRMED = false;
+
+/* The step a failed download stopped at, in words. The server reports it
+   (internal/modelfetch, Status.Stage) so a report says where it stopped even
+   from a phone, where GobboNet's own window is not to hand. */
+const DOWNLOAD_STAGE_WORDS = {
+  folder: 'checking the models folder',
+  checksum: 'reading the checksum',
+  connect: 'contacting Hugging Face',
+  download: 'downloading',
+  verify: 'checking the file',
+  move: 'moving it into place',
+};
 
 function openModelCatalog() {
   // The button that calls this is disabled while the hold flag is off, so
@@ -859,50 +879,132 @@ async function loadModelCatalog() {
     }
     freeEl.textContent = bits.join(' ');
 
-    box.innerHTML = '';
+    _catalogModels = models;
     if (models.length === 0) {
+      box.innerHTML = '';
       box.textContent = 'The catalogue is empty.';
+      showCatalogFilters(false);
       return;
     }
-
-    /* createElement + textContent throughout. These values come from
-       models.ini, which is ours, but this is still the last hop before the
-       DOM and the file is user-editable on disk -- the same trust boundary
-       loadModelsList() treats as hostile a few hundred lines up. */
-    models.forEach(m => {
-      const row = document.createElement('div');
-      row.className = 'catalog-entry' + (m.installed ? ' installed' : '');
-
-      const name = document.createElement('div');
-      name.className = 'catalog-entry-name';
-      name.textContent = m.display;
-      row.appendChild(name);
-
-      const meta = document.createElement('div');
-      meta.className = 'catalog-entry-meta';
-      let desc = m.sizeGB.toFixed(1) + ' GB download';
-      if (m.minVRAM) desc += ' \u00b7 suits ' + m.minVRAM + ' GB VRAM or more';
-      if (m.ctx) desc += ' \u00b7 ' + m.ctx.toLocaleString() + ' token context';
-      meta.textContent = desc;
-      row.appendChild(meta);
-
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-sm';
-      btn.type = 'button';
-      if (m.installed) {
-        btn.textContent = 'ALREADY INSTALLED';
-        btn.disabled = true;
-      } else {
-        btn.textContent = 'DOWNLOAD';
-        btn.onclick = () => startModelDownload(m.index, m.display, m.file);
-      }
-      row.appendChild(btn);
-
-      box.appendChild(row);
-    });
+    showCatalogFilters(true);
+    renderCatalogList();
   } catch (e) {
     box.textContent = 'Could not reach the server: ' + e.message;
   }
+}
+
+/* ================================================================
+   TYPE AND SIZE FILTERS (roadmap 1.7.7)
+
+   The whole catalogue at once is a lot to take in. Two rows of buttons narrow
+   it: what the model is for, and how much it needs to run.
+
+   TYPE comes from the catalogue: each model's `buckets` (coding, roleplay,
+   jack-of-all-trades), tagged by whoever publishes the list, so a new model
+   arrives already sorted. One with none shows under ALL MODELS only.
+
+   SIZE is worked out here from the model's GPU memory figure, so it needs no
+   tagging at all: 8 GB or less is Light, 9 to 16 GB Medium, over 16 GB Heavy.
+   The figure is the same "suits N GB VRAM or more" each row already shows;
+   without a GPU it is roughly the system memory the model wants instead.
+
+   The choice lasts while the page is open, and starts at ALL MODELS / ANY SIZE.
+================================================================ */
+const CATALOG_SIZE_CLASSES = [
+  { key: 'light',  label: 'Light',  maxGB: 8 },
+  { key: 'medium', label: 'Medium', maxGB: 16 },
+  { key: 'heavy',  label: 'Heavy',  maxGB: Infinity },
+];
+let _catalogModels = [];
+let _catalogFilter = { type: 'all', size: 'any' };
+
+/** Light / Medium / Heavy for a model's GPU memory figure, or null when the
+ *  catalogue gives none -- such a model shows under ANY SIZE only. */
+function catalogSizeClass(minVRAM) {
+  const gb = Number(minVRAM);
+  if (!(gb > 0)) return null;
+  return CATALOG_SIZE_CLASSES.find(c => gb <= c.maxGB) || null;
+}
+
+function catalogModelMatches(m, f) {
+  if (f.type !== 'all' && !(Array.isArray(m.buckets) && m.buckets.indexOf(f.type) >= 0)) return false;
+  if (f.size !== 'any') {
+    const c = catalogSizeClass(m.minVRAM);
+    if (!c || c.key !== f.size) return false;
+  }
+  return true;
+}
+
+function showCatalogFilters(on) {
+  const el = document.getElementById('model-catalog-filters');
+  if (el) el.style.display = on ? '' : 'none';
+  paintCatalogFilters();
+}
+
+/* The chosen button is filled, the way SAVE & RESTART MODEL is beside its
+   neighbours; aria-pressed says the same to a screen reader. */
+function paintCatalogFilters() {
+  const el = document.getElementById('model-catalog-filters');
+  if (!el || !el.querySelectorAll) return;
+  el.querySelectorAll('button[data-kind]').forEach(b => {
+    const on = _catalogFilter[b.dataset.kind] === b.dataset.value;
+    b.classList.toggle('btn-fill', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function setCatalogFilter(kind, value) {
+  if (kind !== 'type' && kind !== 'size') return;
+  _catalogFilter[kind] = value;
+  paintCatalogFilters();
+  renderCatalogList();
+}
+
+/* createElement + textContent throughout. These values come from models.ini or
+   the live catalogue -- ours, but this is still the last hop before the DOM
+   and the file is user-editable on disk, the same trust boundary
+   loadModelsList() treats as hostile a few hundred lines up. */
+function renderCatalogList() {
+  const box = document.getElementById('model-catalog-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const shown = _catalogModels.filter(m => catalogModelMatches(m, _catalogFilter));
+  if (shown.length === 0) {
+    box.textContent = 'No models match. Choose ALL MODELS or ANY SIZE to see more.';
+    return;
+  }
+  shown.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'catalog-entry' + (m.installed ? ' installed' : '');
+
+    const name = document.createElement('div');
+    name.className = 'catalog-entry-name';
+    name.textContent = m.display;
+    row.appendChild(name);
+
+    const meta = document.createElement('div');
+    meta.className = 'catalog-entry-meta';
+    const size = catalogSizeClass(m.minVRAM);
+    let desc = (size ? size.label + ' \u00b7 ' : '') + m.sizeGB.toFixed(1) + ' GB download';
+    if (m.minVRAM) desc += ' \u00b7 suits ' + m.minVRAM + ' GB VRAM or more';
+    if (m.ctx) desc += ' \u00b7 ' + m.ctx.toLocaleString() + ' token context';
+    meta.textContent = desc;
+    row.appendChild(meta);
+
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm';
+    btn.type = 'button';
+    if (m.installed) {
+      btn.textContent = 'ALREADY INSTALLED';
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'DOWNLOAD';
+      btn.onclick = () => startModelDownload(m.index, m.display, m.file);
+    }
+    row.appendChild(btn);
+
+    box.appendChild(row);
+  });
 }
 
 async function startModelDownload(index, display, file) {
@@ -1014,7 +1116,9 @@ async function pollModelDownload(opts) {
     }
   } else if (d.state === 'error') {
     if (_catalogPoll) { clearInterval(_catalogPoll); _catalogPoll = null; }
-    document.getElementById('model-catalog-dl-title').textContent = 'Download failed';
+    const where = DOWNLOAD_STAGE_WORDS[d.stage];
+    document.getElementById('model-catalog-dl-title').textContent =
+      'Download failed' + (where ? ' while ' + where : '');
     log.textContent = d.message || 'The download failed.';
   }
 }
@@ -1052,7 +1156,9 @@ async function swapToDownloadedModel() {
                   user "this needs a server" would send them hunting a fault
                   that is ours.
      file://   -- no server to download with, so nothing to offer.
-     served    -- normal operation.
+     served    -- normal operation. While MODEL_CATALOG_CONFIRMED is false
+                  (1.7.7 #8b) the note under the button stays up, saying the
+                  path is being tested and not confirmed working yet.
 
    IS_SERVED is the same flag the rest of this file gates on. */
 function applyModelCatalogAvailability() {
@@ -1089,7 +1195,13 @@ function applyModelCatalogAvailability() {
       btn.textContent = 'BROWSE CATALOGUE';
       btn.title = '';
     }
-    if (note) { note.style.display = 'none'; note.textContent = ''; }
+    if (note && !MODEL_CATALOG_CONFIRMED) {
+      // Live for testing. Not listed as working, and it says so.
+      note.style.display = '';
+      note.textContent = 'Being tested \u2014 not confirmed working yet. If a download fails, ' +
+        'the download window names the step it stopped at, and the [download] lines in ' +
+        'GobboNet\u2019s own window give the detail.';
+    } else if (note) { note.style.display = 'none'; note.textContent = ''; }
     return;
   }
 
