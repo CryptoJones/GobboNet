@@ -15,6 +15,13 @@ build. The maintainer rejected that build (2026-10-12):
 This file holds installer-win/ to that flow, and holds the build guide to
 naming it, so the mistake has to get past a failing test the third time.
 
+Since the 1.7.6 hotfix's installer side was carried over, the finish page and
+the main shortcuts run `gobbonet.exe launch` rather than launch.bat itself.
+The flow is the same: with no settings yet, launch runs launch.bat in its
+console, so the first launch is still the console where the model is chosen.
+Later launches serve the saved settings without the questions, and "Setup or
+add a model" opens launch.bat directly.
+
 It does not compile the installer, which needs makensis. See
 docs/changelog/CHANGELOG-1.7.7-windows-installer.md.
 """
@@ -75,18 +82,28 @@ class TheFlow(unittest.TestCase):
             self.assertIn('SetCtlColors $Dialog "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"', body, page + ' is not painted dark')
 
     def test_finish_launches_the_console_and_offers_phone_access(self):
-        self.assertIn('!define APPEXE      "launch.bat"', CODE)
+        self.assertIn('!define APPEXE      "gobbonet.exe"', CODE)
         self.assertIn('!define MUI_FINISHPAGE_RUN_TEXT "Launch GobboNet"', CODE)
         run = CODE.split('Function RunGobboNet', 1)[1].split('FunctionEnd', 1)[0]
-        self.assertIn('ExecShell "" "$INSTDIR\\${APPEXE}"', run)
+        self.assertIn('ExecShell "" "$INSTDIR\\${APPEXE}" "launch"', run)
+        self.assertIn('SetOutPath "$INSTDIR"', run)
+        # ...and on a new install, launch is the console: no settings yet, so
+        # it runs launch.bat in its own window (cmd/gobbonet/launch.go).
+        go = (ROOT / 'cmd' / 'gobbonet' / 'launch.go').read_text(encoding='utf-8')
+        self.assertIn('exec.Command("cmd.exe", "/d", "/c", "launch.bat")', go)
+        self.assertIn('errors.Is(err, config.ErrNotFound) && !explicit', go)
         self.assertIn('!define MUI_FINISHPAGE_SHOWREADME_TEXT "Set up phone access over the LAN (needs administrator)"', CODE)
         self.assertIn('!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED', CODE)
 
-    def test_shortcuts_open_the_console(self):
-        for lnk in ('$SMPROGRAMS\\${APPNAME}\\${APPNAME}.lnk', '$DESKTOP\\${APPNAME}.lnk'):
-            m = re.search(r'CreateShortcut "%s"\s*\\?\s*"([^"]+)"' % re.escape(lnk), CODE)
+    def test_shortcuts_launch_and_setup_stays_one_click_away(self):
+        def target(lnk):
+            m = re.search(r'CreateShortcut "%s"\s*\\?\s*"([^"]+)" "([^"]*)"' % re.escape(lnk), CODE)
             self.assertTrue(m, 'no shortcut ' + lnk)
-            self.assertEqual(m.group(1), '$INSTDIR\\${APPEXE}')
+            return m.group(1), m.group(2)
+        for lnk in ('$SMPROGRAMS\\${APPNAME}\\${APPNAME}.lnk', '$SMPROGRAMS\\${APPNAME}\\Launch ${APPNAME}.lnk',
+                    '$DESKTOP\\${APPNAME}.lnk'):
+            self.assertEqual(target(lnk), ('$INSTDIR\\${APPEXE}', 'launch'), lnk)
+        self.assertEqual(target('$SMPROGRAMS\\${APPNAME}\\Setup or add a model.lnk'), ('$INSTDIR\\launch.bat', ''))
 
     def test_the_console_picks_the_model_then_opens_the_browser(self):
         # launch.bat asks for the model, then hands over to gobbonet.exe with
@@ -120,6 +137,42 @@ class WhatItInstalls(unittest.TestCase):
         un_go = (ROOT / 'cmd' / 'gobbonet' / 'uninstall.go').read_text(encoding='utf-8')
         for flag in ('"yes"', '"keep-models"'):
             self.assertIn('fs.Bool(%s' % flag, un_go)
+
+
+class TheLanSetupShortcut(unittest.TestCase):
+    """setup-lan.bat stops unless it runs as Administrator. The finish page
+    asks with the runas verb; the Start Menu shortcut has to carry the "Run as
+    administrator" flag instead, or the phone-access step the README describes
+    fails at its first line (found in issue #63's docs pass)."""
+
+    MACRO = (CODE.split('!macro ShortcutRunAsAdmin', 1) + [''])[1].split('!macroend', 1)[0]
+
+    def test_the_flag_is_set_on_the_lan_shortcut_only(self):
+        lines = [l.strip() for l in INSTALL.splitlines()]
+        create = next(i for i, l in enumerate(lines) if l.startswith('CreateShortcut "$SMPROGRAMS\\${APPNAME}\\${APPNAME} LAN Setup.lnk"'))
+        self.assertEqual(lines[create + 2],
+                         '!insertmacro ShortcutRunAsAdmin "$SMPROGRAMS\\${APPNAME}\\${APPNAME} LAN Setup.lnk"')
+        self.assertEqual(INSTALL.count('ShortcutRunAsAdmin'), 1, 'GobboNet itself must not ask for elevation')
+
+    def test_the_macro_ors_in_run_as_user(self):
+        steps = [l.strip() for l in self.MACRO.splitlines()][1:]   # after "!macro ShortcutRunAsAdmin LNK"
+        self.assertIn('FileOpen $9 "${LNK}" a', steps, '"a" keeps the file; "w" would empty it')
+        self.assertEqual([l for l in steps if l.startswith(('FileSeek', 'FileReadByte', 'IntOp', 'FileWriteByte'))],
+                         ['FileSeek $9 0x15 SET', 'FileReadByte $9 $8', 'IntOp $8 $8 | 0x20',
+                          'FileSeek $9 0x15 SET', 'FileWriteByte $9 $8'])
+        self.assertEqual(steps[:2], ['Push $9', 'Push $8'])
+        self.assertEqual(steps[-2:], ['Pop $8', 'Pop $9'])
+
+    def test_the_same_bytes_on_a_shell_link_header(self):
+        # MS-SHLLINK 2.1: HeaderSize, LinkCLSID, then LinkFlags at 0x14.
+        # SLDF_RUNAS_USER is 0x00002000. Replaying the macro on a header with
+        # other flags set must set that one and change nothing else.
+        import struct
+        clsid = bytes.fromhex('0114020000000000c000000000000046')
+        flags = 0x000000DB | 0x00000400
+        lnk = bytearray(struct.pack('<I', 0x4C) + clsid + struct.pack('<I', flags) + bytes(56))
+        lnk[0x15] |= 0x20
+        self.assertEqual(struct.unpack_from('<I', lnk, 0x14)[0], flags | 0x2000)
 
 
 class TheBuildGuide(unittest.TestCase):

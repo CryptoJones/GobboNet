@@ -356,27 +356,11 @@ func isLoopbackConfigured(host string) bool {
 // override the port rule setup-lan.bat adds, and setup-lan.bat still reports
 // [OK] for everything it did. Nothing on the machine would say otherwise.
 func reportFirewall(w io.Writer, port int) {
-	out, err := exec.Command("netsh", "advfirewall", "firewall", "show",
-		"rule", "name=Gemma4-Web").CombinedOutput()
-	switch {
-	case err != nil && len(out) == 0:
-		fmt.Fprintf(w, "  firewall:    could not run netsh: %v\n", err)
-	case !strings.Contains(string(out), strconv.Itoa(port)):
-		fmt.Fprintln(w, "  firewall:    NO RULE for this port.")
-		fmt.Fprintln(w, "               Either setup-lan.bat was never run, or it ran before")
-		fmt.Fprintln(w, "               the port was settled and opened a different one. Re-run")
-		fmt.Fprintln(w, "               it as Administrator now that listen_port is known:")
-		fmt.Fprintln(w, "                 right-click setup-lan.bat -> Run as administrator")
-	default:
-		fmt.Fprintf(w, "  firewall:    rule Gemma4-Web present for port %d\n", port)
-		// Present is not sufficient. The rule is scoped to LocalSubnet, which
-		// is computed per-interface, so a phone on a mesh node or guest SSID
-		// with its own DHCP scope is off-subnet and dropped by a rule that
-		// looks correct in every listing.
-		fmt.Fprintln(w, "               Scoped to LocalSubnet. A phone on a guest network, a")
-		fmt.Fprintln(w, "               mesh node with its own DHCP scope, or a different band")
-		fmt.Fprintln(w, "               on a split-SSID router is off-subnet and still blocked.")
-	}
+	reportPortRule(w, port, func(name string) (string, error) {
+		out, err := exec.Command("netsh", "advfirewall", "firewall", "show",
+			"rule", "name="+name).CombinedOutput()
+		return string(out), err
+	})
 
 	blocks, err := exec.Command("netsh", "advfirewall", "firewall", "show",
 		"rule", "name=all", "dir=in").CombinedOutput()
@@ -500,6 +484,53 @@ func firewalldAllowsPort(list string, port int) bool {
 		}
 	}
 	return false
+}
+
+// The inbound port rule setup-lan.bat adds for the chat. It was named
+// Gemma4-Web, after the model the project started with, until setup-lan.bat
+// began replacing it with GobboNet-Web (issue #63). An install that has not
+// re-run setup-lan.bat since still has the old one, and it still works, so
+// doctor recognises both rather than reporting a working rule as missing.
+const (
+	portRuleName    = "GobboNet-Web"
+	portRuleOldName = "Gemma4-Web"
+)
+
+// reportPortRule reports whether an allow rule for port exists, under either
+// name. show runs `netsh advfirewall firewall show rule name=<name>` and is a
+// parameter so this can be tested without Windows.
+func reportPortRule(w io.Writer, port int, show func(name string) (string, error)) {
+	out, err := show(portRuleName)
+	if err != nil && len(out) == 0 {
+		fmt.Fprintf(w, "  firewall:    could not run netsh: %v\n", err)
+		return
+	}
+	name := portRuleName
+	if !strings.Contains(out, strconv.Itoa(port)) {
+		if old, _ := show(portRuleOldName); strings.Contains(old, strconv.Itoa(port)) {
+			out, name = old, portRuleOldName
+		}
+	}
+	if !strings.Contains(out, strconv.Itoa(port)) {
+		fmt.Fprintln(w, "  firewall:    NO RULE for this port.")
+		fmt.Fprintln(w, "               Either setup-lan.bat was never run, or it ran before")
+		fmt.Fprintln(w, "               the port was settled and opened a different one. Re-run")
+		fmt.Fprintln(w, "               it as Administrator now that listen_port is known:")
+		fmt.Fprintln(w, "                 right-click setup-lan.bat -> Run as administrator")
+		return
+	}
+	fmt.Fprintf(w, "  firewall:    rule %s present for port %d\n", name, port)
+	if name == portRuleOldName {
+		fmt.Fprintf(w, "               That is the rule's old name. It works as it is; re-running\n")
+		fmt.Fprintf(w, "               setup-lan.bat replaces it with %s.\n", portRuleName)
+	}
+	// Present is not sufficient. The rule is scoped to LocalSubnet, which is
+	// computed per-interface, so a phone on a mesh node or guest SSID with its
+	// own DHCP scope is off-subnet and dropped by a rule that looks correct in
+	// every listing.
+	fmt.Fprintln(w, "               Scoped to LocalSubnet. A phone on a guest network, a")
+	fmt.Fprintln(w, "               mesh node with its own DHCP scope, or a different band")
+	fmt.Fprintln(w, "               on a split-SSID router is off-subnet and still blocked.")
 }
 
 // countBlockedGobbonetRules counts inbound Block rules naming our binary.

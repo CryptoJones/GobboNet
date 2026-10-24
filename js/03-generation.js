@@ -507,7 +507,7 @@ async function runGenerationStream(thread, assistantMsg, requestBody, opts = {})
       // somebody to reload, which would also throw away whatever else they
       // had typed. See THE SERVER RESTARTED in 06-state-sync.js.
       errored = true; errorMessage = 'signed out mid-generation — sign back in to re-attach';
-      try { noteLocked({ status: 401 }); } catch (_) {}
+      try { noteLocked({ status: 401, url: JOBS_URL + '/' + jobId }); } catch (_) {}
     } else if (res.status === 'unreachable') {
       errored = true; errorMessage = 'lost contact with the file server mid-generation — the reply may still be completing; reload to re-attach';
     }

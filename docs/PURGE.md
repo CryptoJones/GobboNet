@@ -11,9 +11,14 @@ nothing can clear.
 | Location | What is there | Cleared by |
 |---|---|---|
 | Browser storage on this PC | every thread, character, persona, macro, plus cached embeddings and retrieval telemetry | **Data → PURGE ALL** in the app |
-| `.gobbonet-state.json` in the install folder | a mirror of the above, so a reload never loses a thread | uninstalling |
-| `.jobs\` in the install folder | in-flight generation spool | uninstalling |
+| `state.json` in GobboNet's data folder, plus `state-<name>.json` device-sync backups | the server's mirror of the above, so a reload never loses a thread; encrypted if you turned encryption on | `gobbonet uninstall` (the Windows uninstaller runs it) |
+| `.gobbonet-state.json` and `.jobs\` in the install folder | the same mirror and generation spool from before 1.7; 1.7 reads the mirror in once and leaves the file | the Windows uninstaller |
 | Browser storage on a **phone or tablet** that connected | a full copy, held by that device | only that device |
+
+`gobbonet doctor` shows the data folder under STORAGE. It is normally:
+
+- **Windows:** `%USERPROFILE%\.local\share\gobbonet`
+- **Linux:** `~/.local/share/gobbonet`
 
 The important one: **browser storage is keyed to the exact address you
 opened**, so `127.0.0.1:9066`, `localhost:9066`, `pcname.local:9066` and a
@@ -43,15 +48,43 @@ mirror or any other device.
 
 ### 2. The server-side mirror
 
-Uninstalling removes `.gobbonet-state.json` and the job spool. If you are
-not uninstalling and want it gone now, stop GobboNet and delete it:
+`gobbonet uninstall` removes it, along with the config and stored password,
+and asks before touching your models. The Windows uninstaller runs it for
+you, and asks about the models itself. Run it yourself to clear everything without
+uninstalling the program: stop GobboNet first, then from the install folder
+on Windows,
+
+```
+gobbonet.exe uninstall
+```
+
+or `gobbonet uninstall` on Linux. The next launch starts setup again.
+
+To remove only the conversations and keep your settings, stop GobboNet and
+delete the mirror from the data folder:
+
+```powershell
+$data = "$env:USERPROFILE\.local\share\gobbonet"
+Remove-Item "$data\state.json", "$data\state.json.bak", "$data\state-*.json*" -Force
+```
+
+```sh
+rm -f ~/.local/share/gobbonet/state.json ~/.local/share/gobbonet/state.json.bak \
+      ~/.local/share/gobbonet/state-*.json*
+```
+
+Use the folder `gobbonet doctor` shows if yours differs. If you turned on
+encryption, `state.keyring` beside them holds the key; it can go too.
+
+**Installs from before 1.7** kept the mirror in the install folder. 1.7
+reads it in once and leaves it there. To delete it:
 
 ```powershell
 Remove-Item "$env:LOCALAPPDATA\GobboNet\.gobbonet-state.json" -Force
 Remove-Item "$env:LOCALAPPDATA\GobboNet\.jobs" -Recurse -Force
 ```
 
-Adjust the path if you installed elsewhere. To find every copy on the
+Adjust the path if you installed elsewhere. To find every old copy on the
 machine, including old test installs:
 
 ```powershell
@@ -112,8 +145,13 @@ a default character mean this browser is clean. To be sure nothing is left
 on disk:
 
 ```powershell
-Get-ChildItem "$env:LOCALAPPDATA\GobboNet" -Force |
-  Where-Object { $_.Name -like ".gobbonet*" -or $_.Name -like "*.log" }
+Get-ChildItem "$env:USERPROFILE\.local\share\gobbonet" -Force -Filter "state*"
+Get-ChildItem "$env:LOCALAPPDATA\GobboNet" -Force -Filter ".gobbonet-state*"
 ```
 
-An empty result means the install folder holds no conversation data.
+```sh
+ls -a ~/.local/share/gobbonet | grep '^state'
+```
+
+No results means neither the data folder nor the install folder holds
+conversation data.

@@ -1565,12 +1565,18 @@ function mdRenderCodeBlock(code, lang) {
 function mdRenderFileBlock(filename, code) {
   const fn = escapeHtml(filename);
   const id = 'file_' + Math.random().toString(36).slice(2, 8);
+  // Notes a character writes can go into its memory and be read back later
+  // (issue #41). Text and Markdown only -- the kinds of file memory holds.
+  const memoryBtn = /\.(md|markdown|txt)$/i.test(filename)
+    ? `<button class="btn btn-sm" data-filename="${fn}" onclick="saveFileToCardMemory(this)" title="Keep this file in the character's memory, so it can read it back in later chats">Save to memory</button>`
+    : '';
   return '<div class="file-block">' +
            '<div class="file-header">' +
              `<span class="file-name">&#128196; ${fn}</span>` +
              '<div class="code-btns">' +
                '<button class="btn btn-sm code-copy-btn" onclick="copyCodeBlock(this)">Copy</button>' +
                `<button class="btn btn-sm" data-filename="${fn}" onclick="downloadFile(this)">Save</button>` +
+               memoryBtn +
              '</div>' +
            '</div>' +
            `<pre><code id="${id}">${escapeHtml(code)}</code></pre>` +
@@ -2260,10 +2266,13 @@ function setupDragAndDrop() {
 // compiled, so the entity became a real quote again and closed the string.
 // Reading it off the element -- the pattern copyCodeBlock already uses -- means
 // the value never passes through a JS parser at all.
-function downloadFile(btn) {
+/* The file block a button belongs to, as { filename, content }, or null.
+   Shared by Save and Save to memory, so the two can never read a block
+   differently. */
+function fileBlockPayload(btn) {
   const block = btn && btn.closest && btn.closest('.file-block');
   const el = block && block.querySelector('pre code');
-  if (!el) return;
+  if (!el) return null;
   // parseMarkdown ran escapeHtml over the whole block before this attribute was
   // built, so the value is HTML-encoded rather than raw. Decode it here or the
   // saved file is literally named "x&#39;y.txt". textContent round-trip is the
@@ -2272,7 +2281,14 @@ function downloadFile(btn) {
   const dec = document.createElement('textarea');
   dec.innerHTML = filename;
   filename = dec.value || 'download.txt';
-  const content = el.textContent;
+  return { filename, content: el.textContent };
+}
+
+function downloadFile(btn) {
+  const payload = fileBlockPayload(btn);
+  if (!payload) return;
+  const filename = payload.filename;
+  const content = payload.content;
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2284,3 +2300,142 @@ function downloadFile(btn) {
   URL.revokeObjectURL(url);
 }
 
+
+/* ================================================================
+   HINT TOOLTIPS -- the small "?" beside a feature's one-line note.
+
+   A feature note is one sentence, always visible. The rest of what used to sit
+   under it lives in a hidden <div class="tip-body" id="tip-..."> right after
+   it, and the "?" button names that id in aria-describedby, so a screen reader
+   reads the whole note when the button is focused.
+
+   One popup, #tip-pop, attached to <body> and positioned with `fixed`: the
+   modals scroll and clip their children, and a tooltip near the bottom of one
+   would otherwise be cut off. The note is cloned into it, never parsed from a
+   string -- it is the page's own markup.
+
+   Opens on hover, keyboard focus, or a click / tap (which pins it until a
+   second click, a click elsewhere, or Escape). A tap fires a synthetic hover
+   first; the click then pins rather than toggling it closed, so one tap
+   opens it on a phone.
+================================================================ */
+const _tip = { btn: null, pinned: false, hideTimer: 0 };
+
+function _tipPop() {
+  let pop = document.getElementById('tip-pop');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'tip-pop';
+    pop.setAttribute('role', 'tooltip');
+    pop.hidden = true;
+    pop.addEventListener('mouseenter', () => clearTimeout(_tip.hideTimer));
+    pop.addEventListener('mouseleave', () => { if (!_tip.pinned) _scheduleHideTip(); });
+    document.body.appendChild(pop);
+  }
+  return pop;
+}
+
+function _tipBodyFor(btn) {
+  const id = btn && btn.getAttribute('aria-describedby');
+  return id ? document.getElementById(id) : null;
+}
+
+function _placeTip(btn, pop) {
+  const r = btn.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight, gap = 6, edge = 8;
+  // Out of view (its modal scrolled it away): nothing to point at.
+  if (r.bottom < 0 || r.top > vh || (r.width === 0 && r.height === 0)) { hideHintTip(); return; }
+  pop.style.maxWidth = Math.min(360, vw - 2 * edge) + 'px';
+  pop.style.maxHeight = '';
+  pop.style.left = '0px'; pop.style.top = '0px';
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = Math.min(Math.max(edge, r.left - 12), vw - w - edge);
+  let top = r.bottom + gap;
+  if (top + h > vh - edge) {
+    const above = r.top - gap - h;
+    if (above >= edge) top = above;
+    else {                                   // fits neither way: the roomier side, scrolling inside
+      const below = vh - edge - (r.bottom + gap), up = r.top - gap - edge;
+      if (below >= up) { top = r.bottom + gap; pop.style.maxHeight = below + 'px'; }
+      else { pop.style.maxHeight = up + 'px'; top = edge; }
+    }
+  }
+  pop.style.left = Math.round(Math.max(edge, left)) + 'px';
+  pop.style.top = Math.round(top) + 'px';
+}
+
+function showHintTip(btn, pin) {
+  const body = _tipBodyFor(btn);
+  if (!body) return;
+  clearTimeout(_tip.hideTimer);
+  const pop = _tipPop();
+  if (_tip.btn !== btn) {
+    if (_tip.btn) _tip.btn.classList.remove('tip-open');
+    pop.replaceChildren(...Array.from(body.childNodes, n => n.cloneNode(true)));
+    _tip.btn = btn;
+    _tip.pinned = false;
+  }
+  if (pin) _tip.pinned = true;
+  btn.classList.add('tip-open');
+  btn.setAttribute('aria-expanded', 'true');
+  pop.hidden = false;
+  _placeTip(btn, pop);
+}
+
+function hideHintTip() {
+  clearTimeout(_tip.hideTimer);
+  const pop = document.getElementById('tip-pop');
+  if (pop) { pop.hidden = true; pop.replaceChildren(); }
+  if (_tip.btn) { _tip.btn.classList.remove('tip-open'); _tip.btn.setAttribute('aria-expanded', 'false'); }
+  _tip.btn = null;
+  _tip.pinned = false;
+}
+
+function _scheduleHideTip() {
+  clearTimeout(_tip.hideTimer);
+  _tip.hideTimer = setTimeout(() => { if (!_tip.pinned) hideHintTip(); }, 150);
+}
+
+(function wireHintTips() {
+  if (typeof document === 'undefined' || !document.addEventListener) return;
+  const tipBtn = (e) => (e.target && e.target.closest) ? e.target.closest('.tip-btn') : null;
+  document.addEventListener('mouseover', (e) => {
+    const b = tipBtn(e);
+    if (b && !(_tip.pinned && _tip.btn !== b)) showHintTip(b, false);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const b = tipBtn(e);
+    if (b && b === _tip.btn && !_tip.pinned && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#tip-pop'))) _scheduleHideTip();
+  });
+  document.addEventListener('focusin', (e) => {
+    const b = tipBtn(e);
+    if (b) showHintTip(b, false);
+    else if (_tip.btn && !_tip.pinned && !(e.target.closest && e.target.closest('#tip-pop'))) hideHintTip();
+  });
+  document.addEventListener('focusout', (e) => {
+    const b = tipBtn(e);
+    if (b && b === _tip.btn && !_tip.pinned) _scheduleHideTip();
+  });
+  document.addEventListener('click', (e) => {
+    const b = tipBtn(e);
+    if (b) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_tip.btn === b && _tip.pinned) hideHintTip();
+      else showHintTip(b, true);
+      return;
+    }
+    if (_tip.btn && !(e.target.closest && e.target.closest('#tip-pop'))) hideHintTip();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _tip.btn) {
+      const b = _tip.btn;
+      hideHintTip();
+      e.stopPropagation();             // close the tooltip, not the modal under it
+      try { b.focus(); } catch (_) {}
+    }
+  }, true);
+  const follow = () => { if (_tip.btn) _placeTip(_tip.btn, _tipPop()); };
+  window.addEventListener('resize', follow);
+  document.addEventListener('scroll', follow, true);
+})();

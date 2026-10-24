@@ -390,7 +390,7 @@ async function onHeaderModelChange(sel) {
     }
 
     // Poll until the new server reports healthy or we hit the timeout.
-    const result = await pollSwapStatus(180000); // 3 minutes
+    const result = await pollSwapStatus();
     if (!result || result.phase !== 'ready') {
       throw new Error((result && result.message) || 'Swap did not complete.');
     }
@@ -437,7 +437,7 @@ async function swapToModelFile(file) {
       try { const b = await r.json(); if (b && b.message) msg = b.message; } catch (_) {}
       throw new Error(msg);
     }
-    const result = await pollSwapStatus(180000);
+    const result = await pollSwapStatus();
     if (!result || result.phase !== 'ready') {
       throw new Error((result && result.message) || 'swap did not complete');
     }
@@ -448,30 +448,48 @@ async function swapToModelFile(file) {
   }
 }
 
+/* How long the page waits for a swap. The server owns the real limit --
+   model_load_timeout_seconds in config.toml, reported in every /swap-status as
+   load_timeout_seconds -- and this waits that long plus the time a swap spends
+   stopping the old engine first (up to 20 s), so the server's verdict, with its
+   reason, always arrives before the page gives up on its own. The default is
+   for a server that does not report it: the legacy PowerShell server, or one
+   older than 1.7.8, both of which load within three minutes. */
+const SWAP_STOP_MARGIN_MS = 30000;
+const SWAP_DEFAULT_LOAD_MS = 180000;
+
+function swapPollBudgetMs(status) {
+  const s = status && Number(status.load_timeout_seconds);
+  return (s > 0 ? s * 1000 : SWAP_DEFAULT_LOAD_MS) + SWAP_STOP_MARGIN_MS;
+}
+
 /**
  * Poll /swap-status until the server tells us the swap is done.
  * Returns the final status object, or a synthetic error on timeout.
- * Network blips are tolerated — we keep polling until the wall clock
- * elapses past `timeoutMs`.
+ * Network blips are tolerated -- we keep polling until the budget runs out:
+ * timeoutMs if given, else the server's load timeout plus the margin.
  */
 async function pollSwapStatus(timeoutMs) {
   const start = Date.now();
+  let budget = timeoutMs || swapPollBudgetMs(null);
   // Small grace period before the first poll — the server has just
   // killed and respawned llama-server.exe and may briefly be busy.
   await new Promise(r => setTimeout(r, 800));
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < budget) {
     try {
       const r = await fetch('/swap-status', { cache: 'no-store' });
       if (r.ok) {
         const st = await r.json();
         if (st && (st.phase === 'ready' || st.phase === 'error')) return st;
+        if (!timeoutMs && st) budget = swapPollBudgetMs(st);
       }
     } catch (_) {
       // Server temporarily unreachable — keep trying.
     }
     await new Promise(r => setTimeout(r, 1500));
   }
-  return { phase: 'error', message: 'Timed out waiting for model to load.' };
+  return { phase: 'error', message: 'Timed out after ' + Math.round(budget / 1000) + ' s waiting for the model to load. '
+    + 'The GobboNet window says what happened.' };
 }
 
 /**
@@ -710,7 +728,7 @@ async function _restartModelForPerf() {
     // at load, and "Saved!" followed by a dead model would be the worst
     // possible feedback for a panel whose entire job is letting people
     // push settings past what is safe.
-    const st = await pollSwapStatus(180000);
+    const st = await pollSwapStatus();
     if (st && st.phase === 'ready') {
       _perfStatus('Model restarted with the new settings.', 'ok');
       if (typeof loadActiveModel === 'function') { try { await loadActiveModel(); } catch (e) {} }
@@ -987,6 +1005,11 @@ function renderCatalogList() {
     const size = catalogSizeClass(m.minVRAM);
     let desc = (size ? size.label + ' \u00b7 ' : '') + m.sizeGB.toFixed(1) + ' GB download';
     if (m.minVRAM) desc += ' \u00b7 suits ' + m.minVRAM + ' GB VRAM or more';
+    // Issue #65: a Mixture-of-Experts model also runs well on a smaller card
+    // beside enough system RAM, which is worth saying where people choose.
+    if (m.minVRAM && m.moeMinVRAM && m.minRAM) {
+      desc += ', or ' + m.moeMinVRAM + ' GB with ' + m.minRAM + ' GB system RAM';
+    }
     if (m.ctx) desc += ' \u00b7 ' + m.ctx.toLocaleString() + ' token context';
     meta.textContent = desc;
     row.appendChild(meta);

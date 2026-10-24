@@ -73,12 +73,36 @@ def parse_sizes(text):
     return sizes
 
 
+def ps_table(body):
+    """
+    The `N = V` rows of a PowerShell @{ } table, comments left out. A row
+    commented out with # is not in the table PowerShell builds, so it must
+    not be in the one checked against launch.bat either.
+    """
+    rows = {}
+    for line in body.splitlines():
+        m = re.match(r'\s*(\d+)\s*=\s*(\d+)\s*$', line.split('#', 1)[0])
+        if m:
+            rows[int(m.group(1))] = int(m.group(2))
+    return rows
+
+
+def bat_choice_sets(var, text):
+    """
+    launch.bat's `if "!MODEL_CHOICE!"=="N" set "VAR=V"` lines, as {N: V}.
+    Anchored at the start of a line so a :: comment quoting one is not read
+    as the real thing.
+    """
+    return {int(idx): int(v) for idx, v in re.findall(
+        r'^if\s+"!MODEL_CHOICE!"=="(\d+)"\s+set\s+"' + var + r'=(\d+)"', text, re.M)}
+
+
 def parse_min_vram(text):
     """The $min hashtable in hw-recommend.ps1."""
     match = re.search(r'\$min\s*=\s*@\{([^}]*)\}', text)
     if not match:
         die("could not find the $min=@{...} VRAM table in hw-recommend.ps1")
-    return {int(k): int(v) for k, v in re.findall(r'(\d+)\s*=\s*(\d+)', match.group(1))}
+    return ps_table(match.group(1))
 
 
 def parse_pick_min(text):
@@ -94,8 +118,34 @@ def parse_pick_min(text):
     replays $min, so a drift is a warning our wizard shows that the launcher
     disagrees with.
     """
-    return {int(idx): int(vram) for idx, vram in
-            re.findall(r'if\s+"!MODEL_CHOICE!"=="(\d+)"\s+set\s+"PICK_MIN=(\d+)"', text)}
+    return bat_choice_sets('PICK_MIN', text)
+
+
+def parse_moe(rec_text, launch_text):
+    """
+    The Mixture-of-Experts allowance (issue #65): a smaller card plus enough
+    system RAM. Like the VRAM gate it lives twice -- $moeVram / $moeRam in
+    hw-recommend.ps1 for the menu, MOE_MIN_VRAM / PICK_MOE_RAM in launch.bat
+    for the download warning -- and the two must agree, or the menu would call
+    a model a fit that the download then warns about.
+
+    Returns (min_vram, {slot: min_ram}).
+    """
+    vram_ps = re.search(r'^\$moeVram\s*=\s*(\d+)', rec_text, re.M)
+    table = re.search(r'\$moeRam\s*=\s*@\{([^}]*)\}', rec_text)
+    vram_bat = re.search(r'^set\s+"MOE_MIN_VRAM=(\d+)"', launch_text, re.M)
+    if not (vram_ps and table and vram_bat):
+        die("could not find the MoE allowance: $moeVram and $moeRam in "
+            "hw-recommend.ps1, MOE_MIN_VRAM in launch.bat")
+    ram_ps = ps_table(table.group(1))
+    ram_bat = bat_choice_sets('PICK_MOE_RAM', launch_text)
+    if int(vram_ps.group(1)) != int(vram_bat.group(1)):
+        die("hw-recommend.ps1 ($moeVram=%s) and launch.bat (MOE_MIN_VRAM=%s) disagree "
+            "about the smallest card a MoE model fits" % (vram_ps.group(1), vram_bat.group(1)))
+    if ram_ps != ram_bat:
+        die("hw-recommend.ps1 ($moeRam) and launch.bat (PICK_MOE_RAM) disagree about "
+            "the MoE RAM figures: %r vs %r" % (ram_ps, ram_bat))
+    return int(vram_ps.group(1)), ram_ps
 
 
 def parse_recommend(text):
@@ -143,6 +193,7 @@ def main():
     entries = parse_ladder(text)
     sizes = parse_sizes(text)
     min_vram = parse_min_vram(rec_text)
+    moe_vram, moe_ram = parse_moe(rec_text, text)
     rungs, cpu_only_pick, default_pick = parse_recommend(rec_text)
 
     # Two hand-maintained copies of the same gate, in two languages. Upstream
@@ -201,6 +252,11 @@ def main():
         # a whole number that errs toward asking for more space, not less.
         out.append("size_gb_int=%d" % -(-float(sizes[idx]) // 1))
         out.append("min_vram=%d" % min_vram[idx])
+        # The MoE allowance: also fits a card of moe_min_vram when the machine
+        # has min_ram of system RAM. Absent for dense models.
+        if idx in moe_ram:
+            out.append("moe_min_vram=%d" % moe_vram)
+            out.append("min_ram=%d" % moe_ram[idx])
         out.append("ctx=%s" % fields.get("CTX_SIZE", "16384"))
         out.append("kv=%s" % fields.get("KV_CACHE_TYPE", "q8_0"))
         # Optional SHA-256 pin, carried through from launch.bat when a

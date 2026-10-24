@@ -47,6 +47,7 @@ func cmdUninstall(argv []string) error {
 	// is to clean up, and the default locations are known without it.
 	dataDir := config.DataDir()
 	configDir := config.ConfigDir()
+	configFile := ""
 	modelDir := filepath.Join(dataDir, "models")
 
 	if cfg, err := config.Load(*configPath); err == nil {
@@ -59,6 +60,7 @@ func cmdUninstall(argv []string) error {
 		}
 		if cfg.Path != "" {
 			configDir = filepath.Dir(cfg.Path)
+			configFile = cfg.Path
 		}
 	}
 
@@ -110,10 +112,8 @@ func cmdUninstall(argv []string) error {
 		}
 	}
 
-	if err := os.RemoveAll(configDir); err != nil {
-		fmt.Printf("  [WARN] Could not remove %s: %v\n", configDir, err)
-	} else {
-		fmt.Println("  [OK] Config and stored password removed.")
+	for _, line := range removeConfig(configDir, configFile) {
+		fmt.Println(line)
 	}
 
 	// --- models: the expensive thing --------------------------------------
@@ -172,11 +172,80 @@ func cmdUninstall(argv []string) error {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	for _, line := range removeHint(runtime.GOOS, exe) {
+	appImage := appImageOf(exe, os.Getenv("APPIMAGE"), os.Getenv("APPDIR"))
+	for _, line := range removeHint(runtime.GOOS, exe, appImage) {
 		fmt.Println(line)
 	}
 	fmt.Println()
 	return nil
+}
+
+// removeConfig deletes GobboNet's configuration, and nothing that isn't
+// GobboNet's (issue #63).
+//
+// It used to RemoveAll the folder the config file sat in. That is right for
+// the folder GobboNet creates for itself (config.ConfigDir(), ".../gobbonet"),
+// and wrong anywhere else. --config and $GOBBONET_CONFIG can point at a file
+// in a shared folder, and the last place config discovery looks is
+// ./config.toml beside launch.bat -- the install folder, where a relative
+// model_dir puts the models. RemoveAll there took the user's other files, or
+// the models, silently and before the models question was even asked.
+//
+// So: GobboNet's own folder still goes whole. Any other folder loses only the
+// files GobboNet writes beside a config it is pointed at -- the config file, the
+// copy kept by CONFIG's editor (<config>.bak), a perf.toml it wrote (config.PerfPath; checked by content, the name is
+// generic) and atomic-write leftovers (".<name>.*.tmp") -- and is removed
+// only if that leaves it empty.
+func removeConfig(dir, file string) []string {
+	if file == "" || samePath(dir, config.ConfigDir()) {
+		if err := os.RemoveAll(dir); err != nil {
+			return []string{fmt.Sprintf("  [WARN] Could not remove %s: %v", dir, err)}
+		}
+		return []string{"  [OK] Config and stored password removed."}
+	}
+
+	// The copy CONFIG's config.toml editor keeps of the file before a save
+	// (config.BackupPath). It holds the password hash too.
+	targets := []string{file, config.BackupPath(file)}
+	perf := config.PerfPath(file)
+	if b, err := os.ReadFile(perf); err == nil && config.IsPerfOverlay(b) {
+		targets = append(targets, perf)
+	}
+	if tmps, err := filepath.Glob(filepath.Join(dir, "."+filepath.Base(file)+".*.tmp")); err == nil {
+		targets = append(targets, tmps...)
+	}
+	var warn []string
+	for _, p := range targets {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			warn = append(warn, fmt.Sprintf("  [WARN] Could not remove %s: %v", p, err))
+		}
+	}
+	if len(warn) > 0 {
+		return warn
+	}
+	if os.Remove(dir) == nil {
+		return []string{"  [OK] Config and stored password removed."}
+	}
+	return []string{
+		"  [OK] Config and stored password removed: " + file,
+		"       Its folder holds other files, so it was left in place.",
+	}
+}
+
+// samePath compares two directory paths after cleaning them, ignoring case
+// on Windows, where the file system does.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if aa, err := filepath.Abs(a); err == nil {
+		a = aa
+	}
+	if bb, err := filepath.Abs(b); err == nil {
+		b = bb
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // removeHint says what removes the program files, which this command leaves to
@@ -190,8 +259,17 @@ func cmdUninstall(argv []string) error {
 // put the dnf command in FEDORA.md meanwhile. Naming apt on Windows -- where
 // the NSIS uninstaller invokes this -- had already sent people looking for a
 // package manager that is not there.
-func removeHint(goos, exe string) []string {
+func removeHint(goos, exe, appImage string) []string {
 	switch {
+	// Checked first: from an AppImage the binary sits in a temporary mount,
+	// /tmp/.mount_<random>/usr/lib/gobbonet, which would otherwise read as a
+	// ZIP folder -- one that is read-only and gone the moment GobboNet exits.
+	case appImage != "":
+		return []string{
+			"  GobboNet is running from an AppImage, and that one file is the whole program:",
+			"  delete " + appImage,
+			"  If an AppImage manager added it to your menu, remove it there as well.",
+		}
 	case goos == "windows":
 		return []string{
 			"  The program files themselves belong to the uninstaller:",
@@ -214,6 +292,23 @@ func removeHint(goos, exe string) []string {
 		lines = append(lines, "  This program is in "+filepath.Dir(exe))
 	}
 	return lines
+}
+
+// appImageOf returns the .AppImage file this binary is running from, or "".
+//
+// The AppImage runtime sets APPIMAGE (the file) and APPDIR (where it mounted
+// it) for the program it starts (issue #53). Every child inherits both, so a
+// terminal that is itself an AppImage hands its own to anything started from
+// it; the binary has to be inside APPDIR for APPIMAGE to be about GobboNet.
+func appImageOf(exe, appImage, appDir string) string {
+	if appImage == "" || appDir == "" || exe == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(filepath.Clean(appDir), filepath.Clean(exe))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return appImage
 }
 
 func askYesNo(prompt string) bool {

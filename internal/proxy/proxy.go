@@ -11,6 +11,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -32,6 +33,9 @@ const (
 	// delay. A 40K-context prefill on a large model can run well past thirty
 	// seconds before llama.cpp emits its first byte, and cutting that off looks
 	// to the user like the server is broken when it is merely busy.
+	//
+	// The default only: /llm takes reply_start_timeout_seconds from config.toml
+	// through SetResponseHeaderTimeout. /search and /embed keep this.
 	responseHeaderTimeout = 5 * time.Minute
 
 	// idleTimeout bounds the gap BETWEEN chunks once a stream is flowing, not
@@ -42,10 +46,72 @@ const (
 
 // Proxy forwards a path prefix to an upstream base URL.
 type Proxy struct {
-	prefix   string
-	upstream *url.URL
-	apiKey   string
-	rp       *httputil.ReverseProxy
+	prefix    string
+	upstream  *url.URL
+	apiKey    string
+	rp        *httputil.ReverseProxy
+	transport *http.Transport
+	fails     failLog
+}
+
+// failLog collapses a run of identical upstream failures into a first line and
+// a closing count (issue #63).
+//
+// The chat page polls /llm/health every five seconds. With no model loaded
+// every poll is refused, and each refusal used to be its own log line -- one
+// every five seconds for as long as the tab stayed open, burying whatever
+// else the console had to say and reading out the same sentence over and over
+// to anyone using a screen reader. Nothing is hidden: the first failure is
+// logged as it always was, and when the failure changes or the upstream
+// answers again, one line says how many more there were. Clients still get
+// their 502 on every request; only the log is quieter.
+type failLog struct {
+	mu      sync.Mutex
+	last    string // the error of the run in progress; "" when none
+	repeats int    // failures in that run after the first
+	logf    func(format string, args ...any)
+}
+
+// failed records one upstream failure. The run is keyed on the error alone, not
+// the path: the health poll and a model-list fetch failing against the same
+// dead upstream are one problem, not two alternating ones.
+func (f *failLog) failed(method, path string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	msg := err.Error()
+	if msg == f.last {
+		f.repeats++
+		return
+	}
+	f.closeRunLocked()
+	f.last = msg
+	f.printf("[proxy] %s %s -> %v", method, path, err)
+}
+
+// answered records a response from the upstream, ending any run of failures.
+func (f *failLog) answered(upstream string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.last == "" {
+		return
+	}
+	f.closeRunLocked()
+	f.printf("[proxy] %s is answering again", upstream)
+}
+
+func (f *failLog) closeRunLocked() {
+	if f.repeats > 0 {
+		f.printf("[proxy] (that failure repeated %d more time(s))", f.repeats)
+	}
+	f.last, f.repeats = "", 0
+}
+
+func (f *failLog) printf(format string, args ...any) {
+	if f.logf != nil {
+		f.logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // New builds a proxy stripping prefix and forwarding to upstreamBase.
@@ -70,6 +136,7 @@ func New(prefix, upstreamBase, apiKey string) (*Proxy, error) {
 		ForceAttemptHTTP2:  false,
 	}
 
+	p.transport = transport
 	p.rp = &httputil.ReverseProxy{
 		Rewrite:       p.rewrite,
 		Transport:     transport,
@@ -96,6 +163,7 @@ func New(prefix, upstreamBase, apiKey string) (*Proxy, error) {
 			// idle stream, so we wrap the body and cancel the request context
 			// if it goes quiet for too long.
 			resp.Body = newIdleReader(resp.Body, idleTimeout)
+			p.fails.answered(p.upstream.Redacted())
 			return nil
 		},
 	}
@@ -136,6 +204,17 @@ func (p *Proxy) rewrite(r *httputil.ProxyRequest) {
 	}
 }
 
+// SetResponseHeaderTimeout sets how long the upstream may take to send its
+// first byte. Call it before serving.
+func (p *Proxy) SetResponseHeaderTimeout(d time.Duration) {
+	if d > 0 {
+		p.transport.ResponseHeaderTimeout = d
+	}
+}
+
+// ResponseHeaderTimeout is the first-byte bound in force.
+func (p *Proxy) ResponseHeaderTimeout() time.Duration { return p.transport.ResponseHeaderTimeout }
+
 func (p *Proxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	// A client that navigated away mid-stream is routine on mobile — it is the
 	// exact failure the detached-jobs API exists to work around — and is not
@@ -143,8 +222,15 @@ func (p *Proxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	if r.Context().Err() != nil {
 		return
 	}
-	log.Printf("[proxy] %s %s -> %v", r.Method, r.URL.Path, err)
-	httpx.ErrorDetail(w, r, http.StatusBadGateway, "upstream unreachable", err.Error())
+	p.fails.failed(r.Method, r.URL.Path, err)
+	detail := err.Error()
+	// net/http does not export its first-byte timeout, so its text is the
+	// only handle on it. Name the setting that moves it.
+	if strings.Contains(detail, "timeout awaiting response headers") {
+		detail = fmt.Sprintf("no reply started within %s. Raise reply_start_timeout_seconds in config.toml "+
+			"(CONFIG > Config File) if the model needs longer to read the prompt. (%s)", p.transport.ResponseHeaderTimeout, err)
+	}
+	httpx.ErrorDetail(w, r, http.StatusBadGateway, "upstream unreachable", detail)
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {

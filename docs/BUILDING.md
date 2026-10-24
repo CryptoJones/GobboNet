@@ -19,7 +19,16 @@ against the tree as it ships except where marked.
 ./build-release.sh                    # Go binaries, stamped from VERSION
 # Windows: installer-win/ -- stage the payload, then makensis (installer-win/README.md)
 cd installer-linux && ./build-deb.sh  # gobbonet_<VERSION>+go.<sha>-1_amd64.deb
+./build-appimage.sh                   # GobboNet-<deb version>-x86_64.AppImage, from that .deb
 ```
+
+The AppImage is made from the `.deb`, not beside it, so the two carry the same
+files. `build-appimage.sh` unpacks the newest `dist/gobbonet_*_amd64.deb` (or
+the one you name), adds `AppRun`, the menu entry and the icon, and joins a zstd
+squashfs of it to the AppImage type 2 runtime. The runtime is pinned by SHA-256
+in the script, like the engine, and the build checks the result embeds no
+update address. It does not use appimagetool. Set `SOURCE_DATE_EPOCH` for a
+reproducible image. Background: `docs/changelog/CHANGELOG-1.7.8-appimage.md`.
 
 **The Windows installer is `installer-win/`, not `installer/`.** It is the dark
 installer: Welcome, Destination, Password, Port, Install, the Defender notice,
@@ -46,8 +55,8 @@ It used to be the literal `-3`, left over from 1.7.3's three packaging repairs,
 which meant 1.7.4 shipped claiming two earlier Debian revisions that never
 existed.
 
-`VERSION` is the single input to all three. Tag `v` + `VERSION` (for 1.7.7,
-`v1.7.7`) before building, or `TestVersionFileMatchesUpstreamRelease` will fail:
+`VERSION` is the single input to all three. Tag `v` + `VERSION` (for 1.7.8,
+`v1.7.8`) before building, or `TestVersionFileMatchesUpstreamRelease` will fail:
 it compares `VERSION` against the nearest git tag, on purpose.
 
 Two places carry the number as a literal and move with `VERSION`. A test fails
@@ -64,9 +73,11 @@ if either is left behind:
 | Need | Check | Status here |
 |---|---|---|
 | Go ≥ 1.25 | `go version` | **unavailable in the authoring sandbox** — see below |
-| NSIS 3.09 | `makensis -VERSION` | verified, 3.09 |
+| NSIS 3.12, large strings | `makensis -VERSION`; `-HDRINFO` says sections are 32792 bytes | what built 1.7.7's installer-win; see installer-win/README.md |
+| NSIS 3.09 | `makensis -VERSION` | only for the unreleased `installer/` below |
 | `dpkg-deb`, `zstd`, `fakeroot` | for the deb | |
-| Network to GitHub releases | `build-deb.sh` fetches the engine | |
+| Network to GitHub releases | `build-deb.sh` fetches the engine; `build-appimage.sh` the runtime, once | |
+| `mksquashfs` with zstd (squashfs-tools) | for the AppImage | |
 
 `build-installer.sh` warns if NSIS is not 3.09, because Elodine's 1.3 build used
 it and a version match keeps the output byte-comparable for review. 3.09 is what

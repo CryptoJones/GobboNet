@@ -163,6 +163,28 @@ its tag list, not the weights. So:
 In other words, you're not writing the literal prompt. You're authoring a well-tagged
 library, and the system assembles the right slices into the prompt for you.
 
+### Where the slices go: CONFIG > Prompt Order (1.7.8)
+
+By default the pulled slices sit near the top of the prompt, with the character and
+the lore. **Put lorebook snippets just before my newest message**, in CONFIG, moves
+them down:
+
+1. character and lore
+2. the conversation
+3. lorebook snippets
+4. your new message
+
+Why it matters: llama.cpp keeps the last prompt it read and only reads again from the
+first point where the new one differs. The slices change from message to message, so
+near the top they make it read the whole conversation again every time. Near the end,
+only the last exchange is new. In a long chat that is most of the work the graphics card
+does before a reply: in a test chat, 99% of the prompt was read again each message
+with them at the top, 4% with them at the end.
+
+The same slices reach the model either way; only their place changes, and a model may
+lean on them a little differently near the end. It is off by default, and can be preset
+for every browser with `retrieval_near_end = true` under `[ui]` in `config.toml`.
+
 ---
 
 ## The two global knobs (settings, not per-tag)
@@ -197,6 +219,45 @@ the threshold is your coarse one.
 
 ---
 
+## Memory files: notes a character keeps (1.7.8, issue #41)
+
+Below the Storybook in the card editor is **Memory Files**: `.md` (or `.txt`) notes the
+character reads back when they matter. Use them for things that are *files* rather
+than a bible: a quest log, a journal, a running list of what happened, notes the
+character wrote itself.
+
+- **Getting a file in.** **+ IMPORT .MD** in the editor, or — the loop the issue asked
+  for — when the character writes a ` ```file:notes.md ` block in a reply, that block
+  has a **Save to memory** button next to Save. Saving a file with the same name again
+  asks, then replaces it, so a character can keep one file up to date. **SAVE** in the
+  editor keeps imports and removals; **CANCEL** drops them.
+- **How it is read.** Each file is split at its own headings (`#`, `##` …), then into
+  paragraph-sized parts. They join the same semantic pool as Storybook prose, and only
+  the parts that match the recent conversation are injected, labelled with where they
+  came from:
+
+  ```
+  [Memory file: quest-log.md › Quest log › The mill]
+  The silver key is hidden under the third floorboard of the old mill.
+  ```
+
+  One more short line tells the model which memory files it has and how to rewrite one.
+  A card with no memory files gets neither.
+- **Why not paste into the Storybook?** The Storybook reads a `# heading` line as a new
+  *entity*, and nearly every Markdown file starts with one. Memory files keep their
+  headings as headings.
+- **Without the retrieval model.** When the embedding model isn't running (or
+  Retriever A is switched off), memory files are matched by shared words instead —
+  a part needs at least two distinct words in common with the conversation. Storybook
+  prose doesn't take this path; it works exactly as before.
+- **Limits.** Up to 20 files per character, 100,000 characters each, 400,000 in total.
+- **Where they go.** With the card: its PNG/JPG exports and imports, character and full
+  backups, and device sync. A shared card's files are checked on the way in (names
+  only, never paths; text only; within the limits). Nothing about them leaves this
+  machine except through an export you make.
+
+---
+
 ## One-page cheat sheet
 
 - **One input:** RAG Storybook. Prose → semantic; `*_tags` lines → weighted trigger.
@@ -212,3 +273,6 @@ the threshold is your coarse one.
 - **The model never sees tags or weights** — only the fired entity's prose. Keep
   `[n.n]` out of prose fields.
 - **Tune:** weights = fine, `fire_threshold` = coarse, one knob at a time.
+- **Memory files:** `.md` notes on the card, split at their headings, retrieved like
+  Storybook prose (shared words when the embedding model is off). **Save to memory**
+  on a ` ```file:name.md ` block keeps what the character wrote.

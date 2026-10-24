@@ -12,6 +12,7 @@ contains one is now the abnormal shape -- see payload.manifest.
 """
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,9 +25,14 @@ class PackagePermissions(unittest.TestCase):
         for mask in (0o022, 0o077):
             with self.subTest(umask=oct(mask)), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                for name in ('stage-web.sh', 'chat.html', 'default-characters.json', 'gobbonet.ico'):
+                # The inputs stage-web.sh itself requires, read from it so the
+                # two lists cannot drift (1.7.8 added the home-screen files).
+                stage = (ROOT / 'stage-web.sh').read_text()
+                files = re.search(r'^REQUIRED_FILES="([^"]*)"', stage, re.M).group(1).split()
+                dirs = re.search(r'^REQUIRED_DIRS="([^"]*)"', stage, re.M).group(1).split()
+                for name in ['stage-web.sh', *files]:
                     shutil.copyfile(ROOT / name, root / name)
-                for name in ('js', 'css'):
+                for name in dirs:
                     shutil.copytree(ROOT / name, root / name)
                 # Private source assets must still become public release assets.
                 for f in root.rglob('*'):

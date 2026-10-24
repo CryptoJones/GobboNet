@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"testing"
+)
 
 // Real netsh output shape: blank-line-separated stanzas, field labels that
 // Windows translates, values that it does not.
@@ -80,6 +85,72 @@ func TestCRLFInput(t *testing.T) {
 		"\r\nRule Name: Other\r\nAction: Allow\r\n"
 	if n := countBlockedGobbonetRules(crlf); n != 1 {
 		t.Errorf("got %d, want 1", n)
+	}
+}
+
+// --- The port rule's name -----------------------------------------------------
+
+// fakeNetsh answers `netsh advfirewall firewall show rule name=X` from a map,
+// the way netsh does: a rule it has prints its stanza, one it lacks prints a
+// message and exits 1.
+func fakeNetsh(rules map[string]string) func(string) (string, error) {
+	return func(name string) (string, error) {
+		if out, ok := rules[name]; ok {
+			return out, nil
+		}
+		return "No rules match the specified criteria.\r\n", errors.New("exit status 1")
+	}
+}
+
+func portRuleReport(port int, show func(string) (string, error)) string {
+	var b bytes.Buffer
+	reportPortRule(&b, port, show)
+	return b.String()
+}
+
+const webRule9066 = "Rule Name: X\r\nLocalPort: 9066\r\nAction: Allow\r\n"
+
+// TestPortRuleNewName -- what setup-lan.bat creates from 1.7.8 on (issue #63).
+func TestPortRuleNewName(t *testing.T) {
+	out := portRuleReport(9066, fakeNetsh(map[string]string{"GobboNet-Web": webRule9066}))
+	if !strings.Contains(out, "rule GobboNet-Web present for port 9066") || strings.Contains(out, "old name") {
+		t.Errorf("got:\n%s", out)
+	}
+}
+
+// TestPortRuleOldNameStillCounts -- an install that has not re-run
+// setup-lan.bat since the rename still has a working Gemma4-Web rule. Calling
+// that "NO RULE" would send someone to fix a firewall that is fine.
+func TestPortRuleOldNameStillCounts(t *testing.T) {
+	out := portRuleReport(9066, fakeNetsh(map[string]string{"Gemma4-Web": webRule9066}))
+	if !strings.Contains(out, "rule Gemma4-Web present for port 9066") || !strings.Contains(out, "old name") ||
+		strings.Contains(out, "NO RULE") {
+		t.Errorf("got:\n%s", out)
+	}
+}
+
+func TestPortRulePrefersNewName(t *testing.T) {
+	out := portRuleReport(9066, fakeNetsh(map[string]string{"GobboNet-Web": webRule9066, "Gemma4-Web": webRule9066}))
+	if !strings.Contains(out, "rule GobboNet-Web present") || strings.Contains(out, "Gemma4-Web") {
+		t.Errorf("got:\n%s", out)
+	}
+}
+
+func TestPortRuleMissingOrWrongPort(t *testing.T) {
+	if out := portRuleReport(9066, fakeNetsh(nil)); !strings.Contains(out, "NO RULE for this port") {
+		t.Errorf("no rules: got:\n%s", out)
+	}
+	wrong := "Rule Name: X\r\nLocalPort: 9070\r\nAction: Allow\r\n"
+	out := portRuleReport(9066, fakeNetsh(map[string]string{"GobboNet-Web": wrong, "Gemma4-Web": wrong}))
+	if !strings.Contains(out, "NO RULE for this port") {
+		t.Errorf("rules for another port: got:\n%s", out)
+	}
+}
+
+func TestPortRuleNoNetsh(t *testing.T) {
+	out := portRuleReport(9066, func(string) (string, error) { return "", errors.New("executable file not found") })
+	if !strings.Contains(out, "could not run netsh") {
+		t.Errorf("got:\n%s", out)
 	}
 }
 

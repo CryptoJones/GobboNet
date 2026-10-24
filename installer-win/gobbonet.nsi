@@ -12,8 +12,9 @@
 ;     would mean rewriting every %~dp0 reference across launch.bat and the
 ;     three PowerShell scripts. Installing per-user keeps all of that
 ;     working untouched, and means the installer needs no elevation at all.
-;     Only setup-lan.bat needs admin, and that is handled separately by
-;     launchLAN.exe at runtime.
+;     Only setup-lan.bat needs admin. Windows asks for it when that script
+;     runs: RunLanSetup below uses the runas verb. (Until 1.7 a launchLAN.exe
+;     shim did the asking; see the note under APPEXE.)
 ;
 ;  2. GENERATED STATE IS NOT SHIPPED.
 ;     models-list.json, hardware.json, .hw-parsed.env, *.log and the
@@ -30,19 +31,24 @@ Unicode true
 !endif
 
 !define APPNAME     "GobboNet"
-!define APPVER      "1.7.7"
-; 1.3 shipped launch.exe / launchLAN.exe: small C shims whose only job was to
-; locate the install folder and ShellExecute a .bat. They are gone. The
-; shortcuts and the finish-page checkboxes point at the batch files directly,
-; which is why these two now name .bat files rather than .exe stubs.
-!define APPEXE      "launch.bat"
+!define APPVER      "1.7.8"
+; What the main shortcuts and the finish page start: `gobbonet.exe launch`
+; (1.7.6 hotfix, patch 3). It serves straight away with the settings already
+; saved, and runs launch.bat's first-run setup only when there are none yet
+; (cmd/gobbonet/launch.go). Engine and model setup stays one click away under
+; "Setup or add a model", which runs launch.bat itself.
+;
+; Until 1.7.6 this named launch.bat, so every start went through the batch
+; questionnaire; and 1.3 shipped launch.exe / launchLAN.exe, C shims that only
+; found the folder and ShellExecute'd a .bat. LANEXE still names a batch file.
+!define APPEXE      "gobbonet.exe"
 !define PUBLISHER   "Elodine"
 !define HOMEPAGE    "https://github.com/ElodineOfficial"
 !define LANEXE      "setup-lan.bat"
 !define REGKEY      "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
 Name              "${APPNAME}"
-OutFile           "GobboNetSetup-1_7_7.exe"
+OutFile           "GobboNetSetup-1_7_8.exe"
 InstallDir        "$LOCALAPPDATA\${APPNAME}"
 InstallDirRegKey  HKCU "Software\${APPNAME}" "InstallDir"
 RequestExecutionLevel user
@@ -50,7 +56,7 @@ SetCompressor /SOLID lzma
 ShowInstDetails   show
 ShowUninstDetails show
 
-VIProductVersion "1.7.7.0"
+VIProductVersion "1.7.8.0"
 VIAddVersionKey  "ProductName"     "${APPNAME}"
 VIAddVersionKey  "FileDescription" "${APPNAME} Installer"
 VIAddVersionKey  "FileVersion"     "${APPVER}.0"
@@ -138,12 +144,10 @@ Page custom PortPageCreate PortPageLeave
 ; when Defender is most likely to interfere.
 Page custom DefenderPageCreate
 
-; No value, paired with MUI_FINISHPAGE_RUN_FUNCTION below. MUI's default
-; handling for a bare MUI_FINISHPAGE_RUN path is Exec, which wraps
-; CreateProcess -- and CreateProcess cannot start a .bat, it needs an
-; executable image. With the launch.exe shim gone the target is a batch file,
-; so the checkbox has to go through ShellExecute instead or it silently does
-; nothing. Same reason RunLanSetup below uses ExecShell.
+; No value, paired with MUI_FINISHPAGE_RUN_FUNCTION below, so the checkbox
+; runs RunGobboNet rather than MUI's own Exec of a path. RunGobboNet starts
+; `gobbonet.exe launch` in $INSTDIR, the same command and working folder as
+; the shortcuts, through ShellExecute, the call RunLanSetup uses too.
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Launch GobboNet"
 !define MUI_FINISHPAGE_RUN_FUNCTION RunGobboNet
@@ -426,7 +430,9 @@ Function DefenderPageCreate
   Pop $hDefender
   SetCtlColors $hDefender "${GN_CHECKCOLOR}" "1A1D25"
 
-  ${NSD_CreateLabel} 0 96u 100% 32u "Excluding that folder is what stops GobboNet being quietly quarantined during an overnight scan while you are away from the PC. If files start disappearing later, or a model refuses to load for no clear reason, this is the first thing to check."
+  ; The cost is said here too (issue #63): an excluded folder is not scanned.
+  ; No longer than the paragraph it replaced, so it fits the same four lines.
+  ${NSD_CreateLabel} 0 96u 100% 32u "Excluding it stops GobboNet being quietly quarantined in an overnight scan. The cost: Defender no longer scans that folder, so keep only GobboNet in it. If files go missing or a model won't load for no clear reason, check this first."
   Pop $0
   SetCtlColors $0 "8FA383" "${MUI_BGCOLOR}"
 
@@ -438,7 +444,8 @@ Function DefenderPageCreate
 FunctionEnd
 
 Function RunGobboNet
-  ExecShell "" "$INSTDIR\${APPEXE}"
+  SetOutPath "$INSTDIR"
+  ExecShell "" "$INSTDIR\${APPEXE}" "launch"
 FunctionEnd
 
 ; setup-lan.bat needs administrator rights: it adds a firewall rule and a URL
@@ -450,6 +457,35 @@ FunctionEnd
 Function RunLanSetup
   ExecShell "runas" "$INSTDIR\${LANEXE}"
 FunctionEnd
+
+; The Start Menu's LAN Setup shortcut needs the same request, and a shortcut
+; cannot carry a verb. It carries a flag instead: "Run as administrator" in its
+; Properties is SLDF_RUNAS_USER (0x2000) in the .lnk header's LinkFlags, the
+; DWORD at offset 0x14 -- bit 0x20 of the byte at 0x15. CreateShortcut has no
+; option for it, so it is set on the file afterwards, OR-ed in so every other
+; flag is kept.
+;
+; Without it the shortcut that README.md and TROUBLESHOOTING.md send people to
+; for phone access ran setup-lan.bat unelevated, and setup-lan.bat stops at
+; "This script must be run as Administrator" (issue #63's docs pass found it).
+; That broke when launchLAN.exe -- which asked for elevation in its manifest --
+; was removed in 1.7.
+!macro ShortcutRunAsAdmin LNK
+  Push $9
+  Push $8
+  ClearErrors
+  FileOpen $9 "${LNK}" a
+  ${IfNot} ${Errors}
+    FileSeek $9 0x15 SET
+    FileReadByte $9 $8
+    IntOp $8 $8 | 0x20
+    FileSeek $9 0x15 SET
+    FileWriteByte $9 $8
+    FileClose $9
+  ${EndIf}
+  Pop $8
+  Pop $9
+!macroend
 
 ; ---------------------------------------------------------------------------
 ; Finish-page checkbox legibility.
@@ -489,12 +525,14 @@ Section "GobboNet" SecMain
   ; file open: overwriting it fails with "could not write to file", which
   ; names the symptom and not the cause. stop-gobbonet.bat was written to be
   ; run here. It is taken from this installer rather than $INSTDIR because a
-  ; first install has no copy yet.
+  ; first install has no copy yet. $INSTDIR is passed because the script stops
+  ; only the processes of the install it is pointed at, and run from
+  ; $PLUGINSDIR its own folder is not that install (issue #63).
   InitPluginsDir
   File /oname=$PLUGINSDIR\stop-gobbonet.bat "${APPSRC}\stop-gobbonet.bat"
   DetailPrint "Stopping any running GobboNet..."
   stop_retry:
-  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c ""$PLUGINSDIR\stop-gobbonet.bat" /quiet"'
+  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c ""$PLUGINSDIR\stop-gobbonet.bat" /quiet "$INSTDIR""'
   Pop $0
   ${If} $0 != 0
     MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
@@ -508,7 +546,8 @@ If it will not close, a reboot always clears it." \
   ; --- launcher shims -----------------------------------------------------
   ; Gone as of 1.7. launch.exe / launchLAN.exe were C shims that located the
   ; folder and ShellExecute'd a .bat; the shortcuts and finish-page checkboxes
-  ; now point at those .bat files directly, so there is nothing left to ship.
+  ; now start gobbonet.exe, with batch files only for setup, so there is
+  ; nothing left to ship.
   File "art\gobbonet.ico"
 
   ; --- application --------------------------------------------------------
@@ -539,6 +578,12 @@ If it will not close, a reboot always clears it." \
   ; the tags. Without it an installed copy had neither: no list offline, and
   ; every type button empty.
   File "${APPSRC}\models.ini"
+  ; engine.sha256 (1.7.8): the llama.cpp pin. launch.bat reads it before its
+  ; first-run engine download, and `gobbonet engine install` refuses to run
+  ; without it beside the program (internal/engine). Installed copies used to
+  ; have neither: launch.bat carried its own, older pin, and engine install
+  ; could not find one at all (issue #63).
+  File "${APPSRC}\engine.sha256"
   File "${APPSRC}\chat.html"
   File "${APPSRC}\default-characters.json"
   File "${APPSRC}\LICENSE"
@@ -577,15 +622,23 @@ If it will not close, a reboot always clears it." \
   ; instantly with an empty log. Do not add these back.
 
   ; --- shortcuts ----------------------------------------------------------
+  ; Recreated on every install, so an update also rewrites links an older
+  ; version pointed at launch.bat. SetOutPath is each link's working folder.
+  SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
   CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" \
-                 "$INSTDIR\${APPEXE}" "" "$INSTDIR\gobbonet.ico" 0
+                 "$INSTDIR\${APPEXE}" "launch" "$INSTDIR\gobbonet.ico" 0
+  CreateShortcut "$SMPROGRAMS\${APPNAME}\Launch ${APPNAME}.lnk" \
+                 "$INSTDIR\${APPEXE}" "launch" "$INSTDIR\gobbonet.ico" 0
+  CreateShortcut "$SMPROGRAMS\${APPNAME}\Setup or add a model.lnk" \
+                 "$INSTDIR\launch.bat" "" "$INSTDIR\gobbonet.ico" 0
   CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME} LAN Setup.lnk" \
                  "$INSTDIR\${LANEXE}" "" "$INSTDIR\gobbonet.ico" 0
+  !insertmacro ShortcutRunAsAdmin "$SMPROGRAMS\${APPNAME}\${APPNAME} LAN Setup.lnk"
   CreateShortcut "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" \
                  "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" \
-                 "$INSTDIR\${APPEXE}" "" "$INSTDIR\gobbonet.ico" 0
+                 "$INSTDIR\${APPEXE}" "launch" "$INSTDIR\gobbonet.ico" 0
 
   ; --- registration -------------------------------------------------------
   WriteRegStr HKCU "Software\${APPNAME}" "InstallDir" "$INSTDIR"
@@ -720,7 +773,7 @@ Section "Uninstall"
   DetailPrint "Stopping GobboNet..."
   ${If} ${FileExists} "$INSTDIR\stop-gobbonet.bat"
     un_stop_retry:
-    nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c ""$INSTDIR\stop-gobbonet.bat" /quiet"'
+    nsExec::ExecToLog '"$SYSDIR\cmd.exe" /c ""$INSTDIR\stop-gobbonet.bat" /quiet "$INSTDIR""'
     Pop $0
     ${If} $0 != 0
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
@@ -743,7 +796,7 @@ report that the folder is still open in another program." \
   ; Remove only what we installed. Never RMDir /r $INSTDIR -- that would
   ; take models\ with it, and nobody wants to redownload 40 GB because
   ; they reinstalled.
-  ; ${APPEXE} and ${LANEXE} are launch.bat and setup-lan.bat as of 1.7 and are
+  ; gobbonet.exe goes above, and launch.bat and setup-lan.bat are
   ; named explicitly below, so the two stub-exe lines that used to head this
   ; list are gone with the shims themselves. The two Deletes that replace them
   ; are for upgrades: a 1.6 install has real launch.exe / launchLAN.exe files
@@ -761,6 +814,7 @@ report that the folder is still open in another program." \
   Delete "$INSTDIR\identify-model.ps1"
   Delete "$INSTDIR\hw-recommend.ps1"
   Delete "$INSTDIR\models.ini"
+  Delete "$INSTDIR\engine.sha256"
   Delete "$INSTDIR\chat.html"
   Delete "$INSTDIR\default-characters.json"
   Delete "$INSTDIR\LICENSE"
@@ -809,8 +863,12 @@ report that the folder is still open in another program." \
   Delete "$INSTDIR\.llama-launch.cmd"
   Delete "$INSTDIR\.embed-launch.cmd"
   Delete "$INSTDIR\.last-lan-ip"
+  ; launch.bat's "first-run setup not finished" mark (cmd/gobbonet/launch.go).
+  Delete "$INSTDIR\.gobbonet-setup-pending"
 
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\Launch ${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\Setup or add a model.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME} LAN Setup.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk"
   RMDir  "$SMPROGRAMS\${APPNAME}"

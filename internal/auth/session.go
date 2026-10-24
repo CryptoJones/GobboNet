@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -58,23 +59,43 @@ func (s *SessionStore) Create(clientID string) (string, error) {
 	return token, nil
 }
 
+// Why a presented token was turned away. Rejection is the same for all of
+// them; the reason only goes to the server's own log, so a "signed in, then
+// asked again" report can say which it was.
+const (
+	RejectNone        = ""
+	RejectNoToken     = "no token"
+	RejectUnknown     = "unknown"      // not issued by this run: the server restarted, or never was
+	RejectExpired     = "expired"      // past session_ttl_hours
+	RejectOtherClient = "other client" // a live token from a different address or browser
+)
+
 // Validate reports whether the token is live and still bound to this client.
 func (s *SessionStore) Validate(token, clientID string) bool {
+	ok, _ := s.Check(token, clientID)
+	return ok
+}
+
+// Check is Validate with the reason for a refusal.
+func (s *SessionStore) Check(token, clientID string) (bool, string) {
 	if token == "" {
-		return false
+		return false, RejectNoToken
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	sess, ok := s.sessions[token]
 	if !ok {
-		return false
+		return false, RejectUnknown
 	}
 	if time.Now().After(sess.expiry) {
 		delete(s.sessions, token)
-		return false
+		return false, RejectExpired
 	}
-	return subtle.ConstantTimeCompare([]byte(sess.clientID), []byte(clientID)) == 1
+	if subtle.ConstantTimeCompare([]byte(sess.clientID), []byte(clientID)) != 1 {
+		return false, RejectOtherClient
+	}
+	return true, RejectNone
 }
 
 func (s *SessionStore) Revoke(token string) {
@@ -97,16 +118,36 @@ func (s *SessionStore) sweepLocked() {
 	}
 }
 
+// LoopbackClient is the fingerprint of every request from this machine.
+const LoopbackClient = "loopback"
+
 // ClientFingerprint is a coarse identity for the requesting client: source IP
 // plus User-Agent, hashed.
 //
 // Not a strong identity — an on-path attacker can spoof both — but it means a
 // cookie sniffed off the plaintext LAN cannot simply be replayed from a
 // different device without also matching these. Cheap extra bar.
+//
+// A request from this machine (any loopback address) is one client,
+// "loopback", whatever its address family or browser string. Nothing sniffed
+// off the network can arrive from loopback, and anything already on this
+// machine can reach 127.0.0.1 and copy a User-Agent at will, so binding a
+// loopback session to either protected nothing -- while it did sign people
+// out: a listener on 0.0.0.0 in Go is dual-stack, so one browser can come in
+// as 127.0.0.1 and as ::1, and an extension or DevTools' network conditions
+// can change the browser string mid-session. IPv4-mapped IPv6 addresses
+// (::ffff:192.168.1.5) count as the IPv4 address they carry.
 func ClientFingerprint(r *http.Request) string {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		ip = host
+	}
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
+			return LoopbackClient
+		}
+		ip = addr.String()
 	}
 	sum := sha256.Sum256([]byte(ip + "|" + r.Header.Get("User-Agent")))
 	return hex.EncodeToString(sum[:])

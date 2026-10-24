@@ -86,12 +86,12 @@
 
   <!-- 1. password ------------------------------------------------------- -->
   <section class="step active" id="welcome"><div class="card"><h2>Welcome to GobboNet setup</h2><p>Choose where your models and chats live, secure your chat, then set up your engine and model.</p><div class="row"><button onclick="showSetupStep('location')">Set up GobboNet</button></div></div></section>
-<section class="step" id="location"><div class="card"><h2>Install location</h2><p>The Debian package manages program files in /usr/lib/gobbonet. Choose the folder for your models, chats and downloads below.</p><label for="data-path">Data and model folder</label><input type="text" id="data-path"><div class="row"><button id="save-location">Continue</button></div></div></section>
-<section class="step" id="port"><div class="card"><h2>Choose the web port</h2><label for="web-port">Port</label><input type="text" id="web-port" inputmode="numeric" value="9066"><div class="row"><button id="save-port">Continue</button></div></div></section>
+<section class="step" id="location"><form class="card" novalidate><h2>Install location</h2><p>The Debian package manages program files in /usr/lib/gobbonet. Choose the folder for your models, chats and downloads below.</p><label for="data-path">Data and model folder</label><input type="text" id="data-path"><div class="row"><button id="save-location">Continue</button></div></form></section>
+<section class="step" id="port"><form class="card" novalidate><h2>Choose the web port</h2><label for="web-port">Port</label><input type="text" id="web-port" inputmode="numeric" value="9066"><div class="row"><button id="save-port">Continue</button></div></form></section>
 <section class="step" id="network"><div class="card"><h2>Firewall and network access</h2><p>Linux has no Windows Defender prompt. Local chat needs no inbound firewall rule. For LAN access, allow the selected TCP port in your firewall on your trusted home network. GobboNet will not change firewall rules automatically.</p><p id="firewall-command" class="log"></p><p>LAN chat uses HTTP. Anyone on your network with the password can access it.</p><div class="row"><button id="local-launch">Launch on this machine</button><button class="ghost" id="lan-launch">Set up LAN and launch</button></div></div></section>
 <section class="step" id="extras"><div class="card"><h2>Optional additions</h2><p>Nomic embeddings power semantic retrieval. Download the extra model (about 140 MB) or skip it.</p><p id="extra-status" class="log"></p><div class="row"><button id="extra-download">Download Nomic</button><button class="ghost" id="extra-continue">Skip / continue</button></div></div></section>
 <section class="step" id="s1">
-    <div class="card">
+    <form class="card" novalidate>
       <h2>Set your access password</h2>
       <p>If you later open GobboNet to your home network, this password is what
          stops anyone else on that network reading your chats. It is stored only
@@ -103,12 +103,12 @@
       <p class="note" style="margin-top:14px">Six characters minimum. You will type
          this once in your browser, and once on your phone the first time it connects.</p>
       <div class="row"><button id="b1">Continue</button></div>
-    </div>
+    </form>
   </section>
 
   <!-- 2. backend -------------------------------------------------------- -->
   <section class="step" id="s2">
-    <div class="card">
+    <form class="card" novalidate>
       <h2>Where should models run?</h2>
       <div class="choice sel" id="c-local" data-mode="local">
         <div class="t">On this machine</div>
@@ -125,7 +125,7 @@
         <input type="text" id="rkey" autocomplete="off">
       </div>
       <div class="row"><button id="b2">Continue</button></div>
-    </div>
+    </form>
   </section>
 
   <!-- 3. model ---------------------------------------------------------- -->
@@ -189,6 +189,12 @@
   var state = {}, mode = "local", lan = "off", auto = "off", pick = null, poll = null;
 
   function $(id) { return document.getElementById(id); }
+  // Enter in a field submits its step (issue #63). Each step with inputs is a
+  // <form>, and a form turns Enter into a click on its Continue button, so the
+  // handlers below run unchanged. The submission itself must not navigate.
+  document.querySelectorAll("form.card").forEach(function (f) {
+    f.addEventListener("submit", function (e) { e.preventDefault(); });
+  });
   function step(id) {
     document.querySelectorAll('.step').forEach(function(s) { s.classList.toggle('active', s.id === id); });
     $('err').style.display = 'none';
@@ -269,7 +275,9 @@
       d.innerHTML = '<div class="t"></div><div class="d"></div>';
       d.querySelector(".t").textContent = m.display;
       d.querySelector(".d").textContent =
-        m.size_gb.toFixed(1) + " GB download · suits " + m.min_vram + " GB VRAM or more";
+        m.size_gb.toFixed(1) + " GB download · suits " + m.min_vram + " GB VRAM or more" +
+        (m.moe_min_vram > 0 && m.min_ram > 0
+          ? ", or " + m.moe_min_vram + " GB with " + m.min_ram + " GB system RAM" : "");
       d.onclick = function () {
         box.querySelectorAll(".choice").forEach(function (x) { x.classList.remove("sel"); });
         d.classList.add("sel");
@@ -320,11 +328,20 @@
       .catch(function () { return null; })
       .then(function (g) {
         if (!g || !g.known || !(g.vram_gb > 0) || g.vram_gb >= m.min_vram) return true;
+        // Issue #65: a Mixture-of-Experts model also fits a smaller card when
+        // system RAM holds the experts that do not fit on it. ram_gb is 0 when
+        // the server could not tell, which confirms nothing.
+        var moe = m.moe_min_vram > 0 && m.min_ram > 0;
+        if (moe && g.vram_gb >= m.moe_min_vram && g.ram_gb >= m.min_ram) return true;
         return window.confirm(
           m.display + " wants about " + m.min_vram + " GB of GPU memory, but only " +
           g.vram_gb + " GB was detected" + (g.device ? " (" + g.device + ")" : "") + ".\n\n" +
           "It may run far more slowly than a model that fits: whatever does not fit " +
-          "on the GPU runs from system memory instead.\n\nDownload it anyway?");
+          "on the GPU runs from system memory instead." +
+          (moe ? "\n\nIt is a Mixture-of-Experts model, so a card with at least " +
+            m.moe_min_vram + " GB also runs it well beside " + m.min_ram +
+            " GB of system RAM" + (g.ram_gb > 0 ? "; this machine has " + g.ram_gb + " GB." : ".") : "") +
+          "\n\nDownload it anyway?");
       });
   }
   function pickedModel() {

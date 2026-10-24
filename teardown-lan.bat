@@ -112,12 +112,15 @@ echo.
 :: ---------------------------------------------------------------
 :: FIREWALL RULES
 ::
-:: All four names are attempted, including the two that current versions no
-:: longer create. An upgrade from an older install can still be carrying
-:: them, and leaving a stale allow rule behind is the kind of thing nobody
-:: finds later.
+:: Every name is attempted, including the ones current versions no longer
+:: create: Gemma4-LLM and Gemma4-Search, and Gemma4-Web and Gemma4-mDNS, the
+:: names the two below had until 1.7.8 (issue #63). An upgrade from an older
+:: install can still be carrying them, and leaving a stale allow rule behind
+:: is the kind of thing nobody finds later.
 :: ---------------------------------------------------------------
 echo  [..] Removing firewall rules...
+call :drop_rule "GobboNet-Web"
+call :drop_rule "GobboNet-mDNS"
 call :drop_rule "Gemma4-Web"
 call :drop_rule "Gemma4-mDNS"
 :: The program-scoped allow rule setup-lan.bat adds for gobbonet.exe. It has to

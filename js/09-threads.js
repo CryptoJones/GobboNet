@@ -405,7 +405,7 @@ const AUTO_CONTINUE_TEXT = "Continue the work as instructed, without waiting for
 
 // The defaults -- and what every install had before these became settings in
 // roadmap 1.7.7 #6b. CONFIG -> Auto-Continue changes them per device; the
-// [ui] table in gobbonet.toml can preset them.
+// [ui] table in config.toml can preset them.
 const AUTO_CONTINUE_DELAY_MS = 20000;
 const AUTO_CONTINUE_MAX_CHAIN = 50;   // safety cap; {{auto_continue_9999}} would otherwise be a foot-gun
 

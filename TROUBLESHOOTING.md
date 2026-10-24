@@ -1,5 +1,28 @@
 # Troubleshooting GobboNet
 
+**Start with `gobbonet doctor`.** On Windows, open a Command Prompt in the
+install folder (`%LOCALAPPDATA%\GobboNet` by default) and run
+`gobbonet.exe doctor`. On Linux run `gobbonet doctor`; from the ZIP,
+`./gobbonet doctor`. It prints:
+
+- where the config, conversations and logs are;
+- which engine it will start;
+- whether the web port is free;
+- the addresses a phone could use, and the firewall's say in it.
+
+Most answers below start from something it shows.
+
+Where an answer says to change something in `config.toml`, the chat page can
+open it for you: **CONFIG > Config File**, in a browser on the PC GobboNet runs
+on. It checks a save before writing it and keeps the previous version, and the
+change applies the next time GobboNet starts.
+
+Since 1.7 the server is `gobbonet.exe` (Linux: `gobbonet`). `launch.bat` asks
+its questions, then hands over to it in the same window. The older PowerShell
+file server, `fileserver.ps1`, runs only when `gobbonet.exe` is missing or
+`GOBBONET_LEGACY_SERVER=1` is set. Anything below about `fileserver.ps1` or
+`fileserver.log` applies to that fallback only.
+
 Most problems land in one of four buckets. Work down in order — the first
 one is far more common than people expect.
 
@@ -9,17 +32,17 @@ one is far more common than people expect.
 
 Both have the same short list of causes.
 
-**Something was already holding the port.** Almost always a GobboNet file
-server left over from a previous run — closing the launcher window does not
-stop it. A reboot clears it, which is why rebooting appears to fix a setting
-that was never wrong. From 1.5.9 the launcher checks first and names the
-holder:
+**Something was already holding the port.** Almost always a GobboNet left
+over from a previous run. A reboot clears it, which is why rebooting appears
+to fix a setting that was never wrong. `gobbonet.exe` stops and says so:
 
 ```
-[*] Port 9066 is already in use by PID 9312 (powershell.exe).
+port 9066 is already in use, so nothing was started.
 ```
 
-End that PID in Task Manager and start again — no reboot needed.
+Run `stop-gobbonet.bat` from the install folder, then start again — no reboot
+needed. It stops GobboNet's own processes and nothing else. Or end the holder
+in Task Manager: `gobbonet doctor` shows whether the port is in use.
 
 **The port file could not be read.** `.gobbonet-port` must contain a single
 number. Earlier builds fell back to 9066 silently if it contained anything
@@ -94,13 +117,15 @@ browser keys its storage to the exact address you opened — so
 `localhost:9066` is a different origin from `localhost:8080` and starts
 empty.
 
-Your conversations are safe in `.gobbonet-state.json` in the install
-folder, and GobboNet restores them automatically the first time you open
-the new address. If the sidebar is empty after a moment, force it from the
-Data panel with **Restore from server**.
+Your conversations are safe on the server's side, and GobboNet restores them
+automatically the first time you open the new address. Since 1.7 that copy is
+`state.json` in GobboNet's data folder (`gobbonet doctor`, under STORAGE).
+Before 1.7 it was `.gobbonet-state.json` in the install folder, and 1.7 reads
+it in once. If the sidebar is empty after a moment, force it from the Data
+panel with **Restore from server**.
 
 The old `:8080` origin still holds a copy too. Clearing it is optional;
-see `PURGE.md` if you want it gone.
+see `docs/PURGE.md` if you want it gone.
 
 ### Why the port moved
 
@@ -112,25 +137,30 @@ keypad) sits clear of all of that.
 
 To pick a different port, set one during install, or edit
 `.gobbonet-port` in the install folder — one line, just the number. For a
-single run, `set GEMMA_LISTEN_PORT=8420` before launching wins over both.
+single run, `set GOBBONET_LISTEN_PORT=8420` before launching wins over both.
 
 ---
 
 ## The chat page will not load (nothing on :9066)
 
-**Read the log first.** `fileserver.ps1` prints the exact reason it failed,
-and as of 1.5.4 it writes that to `fileserver.log` in the install folder.
-launch.bat prints the file for you when the server does not come up.
+**Read the window first.** `gobbonet.exe` prints the reason it stopped in the
+launcher window, and also appends it to `startup-error.log` beside the config.
+`gobbonet doctor` shows that path under LOGS. A menu launch on Linux has no
+window, so look in `~/.local/share/gobbonet/launch.log`.
 
-```
-type "%LOCALAPPDATA%\GobboNet\fileserver.log"
-```
-
-That one file separates four failures that look identical from outside:
-
-| What the log says | What it means |
+| What it says | What it means |
 |---|---|
-| `[FATAL] No access secret provided` | Not a port problem at all — see *Password* below |
+| `port 9066 is already in use, so nothing was started` | Something holds the port, usually an earlier GobboNet — see the top of this page |
+| `port 9066 was refused on every address` | Not a busy port: a reserved range or policy — see below |
+| `LAN ACCESS IS OFF` with `Network bind failed: ...` | Working, but this PC only — the network address was refused, so it fell back to this PC |
+| `access_secret ... is malformed`, or `no password is set` | Not a port problem at all — see *Password* below |
+
+With the legacy PowerShell server, the same reasons go to `fileserver.log` in
+the install folder instead:
+
+| What `fileserver.log` says | What it means |
+|---|---|
+| `[FATAL] No access secret provided` | See *Password* below |
 | `[fatal] cannot create System.Net.HttpListener` | PowerShell is in a restricted language mode (WDAC/AppLocker) |
 | `[warn] could not bind ... [ok] listening on 127.0.0.1` | Working, but this PC only — run `setup-lan.bat` for phone access |
 | `[fatal] could not bind ... either` | Port genuinely unavailable — checklist below |
@@ -150,7 +180,7 @@ netsh interface ipv4 show excludedportrange protocol=tcp
 If a range covers your port, either use a different port:
 
 ```
-set GEMMA_LISTEN_PORT=8420
+set GOBBONET_LISTEN_PORT=8420
 launch.bat
 ```
 
@@ -164,37 +194,90 @@ netsh int ipv4 add excludedportrange protocol=tcp startport=9066 numberofports=1
 
 ### Other bind causes
 
+When the network address is refused but this PC's is not, the server keeps
+going on `127.0.0.1` only. The chat works on this PC, and phones will not
+reach it until that is fixed. On Windows, run `setup-lan.bat` as
+Administrator: it adds the firewall rule for the port. `gobbonet doctor`
+reports the rule under LAN ACCESS.
+
+The legacy PowerShell server also needs a URL reservation, and can lose the
+port to another HTTP.SYS service:
+
 ```
 netsh http show urlacl url=http://+:9066/     :: missing reservation? run setup-lan.bat as admin
 netsh http show servicestate                  :: another service (IIS, VMware, Citrix) owning it?
 ```
 
-Note that a missing URL ACL is no longer fatal — the server falls back to
-`127.0.0.1` only. The chat works on this PC; phones will not reach it until
-you run `setup-lan.bat` as Administrator.
-
 ---
 
 ## Password problems
 
-The password lives in `.gobbonet-secret` as one line of `<hex>:<hex>` with
-no trailing newline. If it is emptied, truncated or locked by antivirus,
-the file server exits before it ever tries to listen — which looks exactly
-like a port failure and sends people hunting the wrong thing.
+On Windows, `launch.bat` keeps the password in `.gobbonet-secret` in the
+install folder, as one line of `<hex>:<hex>` with no trailing newline, and
+hands it to `gobbonet.exe` on every launch. If that file is emptied,
+truncated or locked by antivirus, the server can end up with no usable
+password and stop before it listens, with `access_secret ... is malformed`.
+In a hurry that reads like a port failure and sends people hunting the
+wrong thing.
 
-To start over, delete it and relaunch:
+To start over, delete it and relaunch. `launch.bat` asks for a new password:
 
 ```
 del "%LOCALAPPDATA%\GobboNet\.gobbonet-secret"
 ```
 
+Use this rather than `gobbonet.exe set-password` on Windows: `launch.bat`
+would hand the old password back on its next run.
+
 If you see `.gobbonet-secret.bad`, a previous setup wrote something the
 launcher could not parse. Its contents are kept for diagnosis; deleting it
 is safe.
 
+On Linux, run `gobbonet set-password`, then restart GobboNet.
+
+### "My phone keeps asking me to sign in"
+
+A sign-in lasts 12 hours (`session_ttl_hours` in the config), and only until
+GobboNet restarts. It also belongs to one device and browser: it is tied to
+the address the request came from and to the browser's identity. So a phone
+signs in again when its network address changes (moving between Wi-Fi and
+mobile data, or a new address from the router), when its browser updates,
+or when you use a different browser on it. That is deliberate: a sign-in
+copied off the network cannot simply be reused from another device.
+
+A GobboNet icon on an iPhone or iPad home screen counts as its own browser:
+iOS keeps its sign-in and storage apart from Safari's. Sign in once in it, and
+your chats come over from the PC by themselves.
+
+On the PC itself (`127.0.0.1`, `localhost`) a sign-in is tied to neither: no
+one off the network can reach those addresses, so the tie protected nothing
+there and only caused needless sign-ins.
+
+### "It asked me to sign in again right after I signed in"
+
+Since 1.7.8 the page double-checks before it asks: one refused request is not
+enough, the next check has to be refused too. And a tab that is asking carries
+on by itself once you sign in in another tab of the same browser.
+
+If it still asks, the `gobbonet.exe` window says why, in a line starting
+`[auth]`:
+
+- **"a session this server did not issue"**: the sign-in is from before
+  GobboNet restarted, or a second GobboNet on the same address but another
+  port signed this browser in. Browsers share cookies across ports.
+- **"reached its time limit"**: `session_ttl_hours` ran out.
+- **"a different network address or browser"**: the device's address or
+  browser changed (see above).
+
+The browser console (F12) names the request that was refused, in a line
+starting `[auth] signed out:`. Both lines are worth including in a bug report.
+
 ---
 
 ## The console says "Waiting for server to come back up..." forever
+
+*Legacy PowerShell server only. `gobbonet.exe` supervises llama-server
+itself and has no such loop.*
 
 If the chat works in the browser but the launcher window keeps printing
 dots, the monitor and the server disagree about what "up" means.
@@ -233,7 +316,7 @@ If you still see a collision, set the ports explicitly before launching:
 
 ```
 set GEMMA_LLM_PORT=11437
-set GEMMA_LISTEN_PORT=9066
+set GOBBONET_LISTEN_PORT=9066
 launch.bat
 ```
 
@@ -241,7 +324,8 @@ launch.bat
 
 ## The model will not load
 
-The launcher stops and shows `llama-server.log`. Two common causes:
+The reason is in `llama-server.log` in GobboNet's data folder
+(`gobbonet doctor`, under LOGS). Two common causes:
 
 - **Not enough VRAM.** Pick a smaller model or a heavier quantisation.
 - **Stale server.** Closing the window without stopping the servers can
@@ -251,20 +335,27 @@ The launcher stops and shows `llama-server.log`. Two common causes:
 If a model downloaded but never loads, check for a leftover `.part` file in
 `models\` — that is an aborted download and is safe to delete.
 
+**"did not finish loading within 3m0s"** means the model was still loading when
+GobboNet gave up. A big model on a slow disk, or one loading onto the CPU, can
+need longer: raise `model_load_timeout_seconds` in `config.toml` (CONFIG >
+Config File), for example to 600, and restart GobboNet. **"did not start
+replying within 5m0s"** is the same for the prompt being read before a reply:
+raise `reply_start_timeout_seconds`.
+
 ---
 
 ## Windows Defender, and how to stop it interfering
 
 GobboNet has a shape Defender does not like: it downloads a multi-gigabyte
-file, opens several local listening ports, and runs PowerShell out of a
-folder in your user profile. Every one of those is normal here and every one
+file, opens several local listening ports, and runs scripts and programs out
+of a folder in your user profile. Every one of those is normal here and every one
 of them is also what a lot of malware does. Defender judges the shape, not
 the intent, so it sometimes acts.
 
 The most disruptive version of this is not a warning at all — it is a
 scheduled scan quarantining a file overnight while you are away from the PC.
-You come back to a model that will not load, or `fileserver.log` that was
-never written, with nothing on screen explaining why.
+You come back to a model that will not load, or a launcher that stops
+partway, with nothing on screen explaining why.
 
 **Excluding the folder prevents that:**
 
@@ -282,15 +373,21 @@ The default folder is:
 The installer shows this on its own screen before first launch, so if you
 skipped past it, this is that.
 
+**The cost:** Defender does not scan anything in an excluded folder. Keep
+only GobboNet there, and don't save other downloads into it.
+
 ### Other symptoms worth knowing
 
 - **SmartScreen: "Windows protected your PC"** on the installer. It is
   unsigned — **More info → Run anyway**. Verify the SHA-256 against the
-  release page if you want certainty about the bytes.
-- **`fileserver.log` is never created.** PowerShell never ran the script at
-  all. Antivirus quarantine or an AppLocker/WDAC script policy. Check your
+  release page if you want certainty about the bytes. Firefox may also hold
+  the download back as not commonly downloaded; allow it from the downloads
+  list.
+- **`gobbonet.exe` or a script is missing from the install folder.**
+  Antivirus quarantine, or an AppLocker/WDAC policy blocking it. Check your
   antivirus protection history first — a quarantined file is listed there
-  with a timestamp.
+  with a timestamp. (With the legacy server, the same thing shows up as a
+  `fileserver.log` that is never created.)
 - **A model that loaded yesterday will not load today.** Check the models
   folder still contains the `.gguf`. A quarantined file disappears silently.
 
@@ -299,22 +396,63 @@ exclusion is narrower and reversible.
 
 ---
 
-## Linux / Wine
+## Linux
 
-Not supported yet. `fileserver.ps1` **is** the web server, and with the
-hardware probe and model identifier that is roughly 4,000 lines of
-PowerShell, which Wine does not implement. The launcher detects Wine, says
-so, and continues anyway — people have got it running by patching around
-the gaps, and nothing here will stop you trying.
+Linux is supported natively: a `.deb`, an `.rpm`, an AppImage, or the ZIP.
+See `LINUX-START-HERE.md`. A launch from the application menu has no
+window, so its messages and the setup page's address go to
+`~/.local/share/gobbonet/launch.log`.
+
+Running the Windows launcher under Wine is not supported, and with a native
+build there is no reason to. `launch.bat` detects Wine and says so.
+
+---
+
+## The graphics card works hard on every message in a long chat
+
+Before each reply the model reads the prompt. llama.cpp keeps the last one and
+only reads again from the first point that changed. A character with a RAG
+Storybook or memory files gets lorebook snippets that change from message to
+message, and by default they sit near the top of the prompt, so the whole
+conversation is read again each time. On a big model and a long chat that can
+mean a burst of full GPU load, and power draw, before every reply.
+
+In CONFIG, under **Prompt Order**, tick **Put lorebook snippets just before my
+newest message** and save. Only the end of the prompt is read again from then
+on. It changes nothing for a character without a lorebook.
+
+---
+
+## A name nobody used keeps turning up in the chat
+
+Before 1.7.8, the instructions Lore System used to summarise old messages
+included an example with the names **Lucia** and **Vasch**. Small models
+sometimes copied them into a thread's lore, and the character then treated
+them as part of the story. The instructions no longer name anyone, but lore
+written before the update keeps what it has. To clear it:
+
+1. Open the thread and click the lore chip in the chat header.
+2. Choose **EDIT**, delete the lines with the stray names, and save.
+
+A character can also be given its own summary instructions: tick **Edit the
+lore summary prompt** in the character editor, next to RAG Storybook.
 
 ---
 
 ## Still stuck
 
-Include these in a bug report and it can usually be answered in one reply:
+Open an issue with the bug report form. These usually let it be answered in
+one reply:
 
-1. `fileserver.log` (whole file)
-2. Whether launch.bat printed **"No working PowerShell found"**
-3. Whether the chat page itself loaded — that proves a PowerShell HTTP
-   listener bound successfully, which rules out a whole class of theories
-4. Output of `netsh interface ipv4 show excludedportrange protocol=tcp`
+1. The output of `gobbonet doctor` (read it over first: it shows local
+   addresses and folder paths)
+2. **COPY BUILD INFO** from ABOUT in the app, if the chat page opens
+3. What the launcher window printed last, or on Linux,
+   `~/.local/share/gobbonet/launch.log`
+4. `llama-server.log` if a model will not load (`gobbonet doctor` shows where
+   it is)
+5. On Windows, if the port is refused:
+   `netsh interface ipv4 show excludedportrange protocol=tcp`
+
+Security problems go privately to Elodine on the GobboNet Discord, not in an
+issue.

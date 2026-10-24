@@ -203,8 +203,11 @@ func (s *server) startGPUProbe() {
 // whose memory is a share of system RAM. The wizard then says nothing --
 // launch.bat's rule: never block on a failed probe.
 type gpuResponse struct {
-	Known   bool            `json:"known"`
-	VRAMGB  int             `json:"vram_gb"`
+	Known  bool `json:"known"`
+	VRAMGB int  `json:"vram_gb"`
+	// RAMGB is system RAM in nominal GB, 0 when unknown. A Mixture-of-Experts
+	// model fits a smaller card when this covers its min_ram (issue #65).
+	RAMGB   int             `json:"ram_gb"`
 	Device  string          `json:"device,omitempty"`
 	Devices []engine.Device `json:"devices"`
 	Note    string          `json:"note,omitempty"`
@@ -220,7 +223,7 @@ func (s *server) handleGPU(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.gpuOnce.Do(s.startGPUProbe)
-	resp := gpuResponse{Devices: []engine.Device{}}
+	resp := gpuResponse{Devices: []engine.Device{}, RAMGB: systemRAMGB()}
 	select {
 	case <-s.gpuDone:
 	case <-time.After(gpuWait):
@@ -271,7 +274,10 @@ type catalogModel struct {
 	Display string  `json:"display"`
 	SizeGB  float64 `json:"size_gb"`
 	MinVRAM int     `json:"min_vram"`
-	File    string  `json:"file"`
+	// The MoE allowance (issue #65); 0 for dense models.
+	MoEMinVRAM int    `json:"moe_min_vram"`
+	MinRAM     int    `json:"min_ram"`
+	File       string `json:"file"`
 }
 
 func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -289,7 +295,7 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	for _, e := range s.cat.Entries {
 		resp.Models = append(resp.Models, catalogModel{
 			Index: e.Index, Display: e.Display, SizeGB: e.SizeGB,
-			MinVRAM: e.MinVRAM, File: e.File,
+			MinVRAM: e.MinVRAM, MoEMinVRAM: e.MoEMinVRAM, MinRAM: e.MinRAM, File: e.File,
 		})
 	}
 	if s.dl != nil {

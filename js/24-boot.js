@@ -15,7 +15,7 @@ window.GobboNet.ready = (async function boot() {
   await loadState();
   if (typeof checkUpgradeRecovery === 'function') await checkUpgradeRecovery();
 
-  // The [ui] presets from gobbonet.toml. Awaited rather than fired and
+  // The [ui] presets from config.toml. Awaited rather than fired and
   // forgotten: on a device with no settings of its own these become the
   // starting values, and that has to happen before the first render or the
   // user watches the page repaint itself. It is one small same-origin request
@@ -208,6 +208,9 @@ function handleAppWake(reason) {
   // Always: unpark the poll loop. Cheap, idempotent, and exactly what a
   // reconnect needs — the next poll (or failure retry) fires immediately.
   wakePendingPolls();
+  // A tab asking for the password may already be signed in again, from
+  // another tab of this browser. Look before asking twice.
+  if (typeof recheckLockedSession === 'function') recheckLockedSession(reason).catch(() => {});
   if (!_appBooted) return;
   // 'online' can fire while the page is hidden — resuming into a background
   // tab wastes radio and races the eventual visible-wake; polls are enough.

@@ -24,7 +24,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 # Build scratch and generated trees are not ours to police.
-SKIP_DIRS = {'.git', 'dist', 'stage', 'vendor', 'payload', 'rpmbuild', 'node_modules'}
+SKIP_DIRS = {'.git', 'dist', 'stage', 'stage-appimage', 'vendor', 'payload', 'rpmbuild', 'node_modules'}
 
 # A path to a .sh or .py in COMMAND position: at the start of a line, after an
 # operator or control word, or as the first word of a $( ) substitution. The

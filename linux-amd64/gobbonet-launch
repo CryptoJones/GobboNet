@@ -174,6 +174,15 @@ if [ "$FORCE_SETUP" = "0" ] && "$BIN" setup --status >/dev/null 2>&1; then
     echo "setup: already complete"
 else
     echo "setup: first run"
+    # The setup page is served by gobbonet-setup.py. The packages depend on
+    # python3, so it is always there for them; the ZIP and the AppImage
+    # (issue #53) bring no interpreter of their own, and a missing one used to
+    # surface as "first-run setup did not finish" with a bare "command not
+    # found" in the log -- true, and no help at all.
+    command -v python3 >/dev/null 2>&1 || die "GobboNet's first-run setup needs Python 3, and this system has no python3.
+
+Install it with your package manager -- the package is python3 on most
+systems, python on Arch and its relatives -- then start GobboNet again."
     SETUP_LOG="$(mktemp "$DATA_DIR/setup.XXXXXX")" || die "Cannot create setup log."
     python3 "$PREFIX/gobbonet-setup.py" "$ENGINE" >"$SETUP_LOG" 2>&1 &
     SETUP_PID=$!

@@ -291,3 +291,12 @@
 @media (prefers-reduced-motion: reduce) {
   .char-dismiss-notice { transition: none; transform: translate(-50%, 0); }
 }
+
+/* Memory files in the card editor (issue #41). */
+.card-memory-list { display: flex; flex-direction: column; gap: 4px; }
+.card-memory-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px;
+}
+.card-memory-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cyan-bright); }
+.card-memory-meta { opacity: 0.6; white-space: nowrap; font-size: 11px; }

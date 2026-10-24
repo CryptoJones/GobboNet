@@ -5,6 +5,8 @@
 //
 //	/login, /logout            unauthenticated
 //	/favicon.ico               unauthenticated (so the login tab isn't ugly)
+//	/manifest.webmanifest,     unauthenticated: the home-screen manifest and
+//	/icons/gobbonet-*.png      icons, publicAssets below
 //	-------------------------- auth gate --------------------------
 //	/health-fileserver         liveness, plus what this server is capable of
 //	/active-model.json         model identity for the UI
@@ -13,6 +15,7 @@
 //	/model-download            start (POST) and poll (GET) a model download
 //	/state, /state/*           cross-device state sync
 //	/perf                      llama-server tuning the settings panel edits
+//	/config/file[/restore]     CONFIG's config.toml editor, this PC only
 //	/swap-model, /swap-status  model-swap contract
 //	/llm/jobs, /llm/jobs/*     detached generation (OUR routes, not llama.cpp's)
 //	/llm, /llm/*               reverse proxy -> llama.cpp
@@ -60,6 +63,9 @@ type Server struct {
 	legacyMu     sync.Mutex
 	legacyDone   bool
 	legacyResult state.LegacyMigration
+
+	// Refused sessions already reported in the log (authlog.go).
+	rejected rejectLog
 
 	// web is the frontend: the copy built into the binary, or a disk directory
 	// layered over it when web_root names one. Resolved once in New rather than
@@ -173,10 +179,16 @@ func New(cfg config.Config, mode config.Mode, sup *supervisor.Supervisor) (*Serv
 		s.jobs.Acquire = sup.AcquireRequest
 	}
 
+	// How long a reply may take to start (reply_start_timeout_seconds): the
+	// detached jobs every reply goes through, and the direct /llm route lore
+	// compression uses. Not /search or /embed, which keep their default.
+	s.jobs.SetReplyStartTimeout(cfg.ReplyStartTimeout())
+
 	// Only the LLM upstream gets the API key: it is the one we authenticate to.
 	if s.llmProxy, err = proxy.New("/llm", cfg.LLMURL, cfg.LLMAPIKey); err != nil {
 		return nil, fmt.Errorf("llm_url: %w", err)
 	}
+	s.llmProxy.SetResponseHeaderTimeout(cfg.ReplyStartTimeout())
 	if s.searchProxy, err = proxy.New("/search", cfg.SearchURL, ""); err != nil {
 		return nil, fmt.Errorf("search_url: %w", err)
 	}
@@ -227,7 +239,25 @@ func (s *Server) authenticated(r *http.Request) bool {
 	if !s.authRequired() {
 		return true
 	}
-	return s.sessions.Validate(auth.TokenFromRequest(r), auth.ClientFingerprint(r))
+	token := auth.TokenFromRequest(r)
+	ok, why := s.sessions.Check(token, auth.ClientFingerprint(r))
+	if !ok {
+		s.noteRejected(r, token, why)
+	}
+	return ok
+}
+
+// publicAssets are the home-screen manifest and its icons (issue #63), served
+// before sign-in. A phone meets GobboNet at the login page, and "Add to Home
+// Screen" there has to find the name and icon -- and Chrome fetches a manifest
+// without cookies anyway. They are named one by one rather than as an /icons/
+// prefix, so nothing added to the web root later becomes public by accident.
+// None of them says anything about the user or their chats.
+var publicAssets = map[string]bool{
+	"/manifest.webmanifest":   true,
+	"/icons/gobbonet-180.png": true,
+	"/icons/gobbonet-192.png": true,
+	"/icons/gobbonet-256.png": true,
 }
 
 // ServeHTTP is the dispatcher.
@@ -264,6 +294,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/favicon.ico" && !s.authenticated(r):
 		// Served without auth purely so the login tab isn't ugly.
 		static.Serve(w, r, s.web, "/favicon.ico")
+		return
+	case publicAssets[path] && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+		static.Serve(w, r, s.web, path)
 		return
 	}
 
@@ -344,6 +377,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/perf":
 		s.handlePerf(w, r)
+
+	// CONFIG > config.toml. Only a browser on this PC may read or save it;
+	// see configfile.go.
+	case path == "/config/file" || path == "/config/file/restore":
+		s.handleConfigFile(w, r)
 
 	// CONFIG's "Phone & Other Devices": the addresses phones can use, and the
 	// listen address and port for the next start. See lan.go.

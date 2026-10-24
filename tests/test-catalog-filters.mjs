@@ -38,7 +38,8 @@ const MODELS = [
   { index: 3, display: 'Mistral 7B v0.3', file: 'c', sizeGB: 7.5, minVRAM: 8, ctx: 16384, buckets: ['roleplay'] },
   { index: 4, display: 'Qwen3.5 9B', file: 'd', sizeGB: 6.2, minVRAM: 8, ctx: 32768, buckets: ['coding'] },
   { index: 5, display: 'Gemma 4 26B-A4B MoE', file: 'e', sizeGB: 16, minVRAM: 16, ctx: 16384, buckets: ['roleplay', 'jack-of-all-trades'] },
-  { index: 6, display: 'Qwen3.6 35B-A3B MoE', file: 'f', sizeGB: 22, minVRAM: 24, ctx: 8192, buckets: ['coding', 'jack-of-all-trades'] },
+  { index: 6, display: 'Qwen3.6 35B-A3B MoE', file: 'f', sizeGB: 22, minVRAM: 24, ctx: 8192, buckets: ['coding', 'jack-of-all-trades'],
+    moeMinVRAM: 8, minRAM: 32 },
   { index: 7, display: 'DeepSeek-R1 8B', file: 'g', sizeGB: 8.5, minVRAM: 10, ctx: 32768, buckets: ['coding'] },
   { index: 8, display: 'gpt-oss 20B', file: 'h', sizeGB: 12, minVRAM: 12, ctx: 16384, buckets: ['coding', 'jack-of-all-trades'] },
   { index: 9, display: 'Command R 7B (12-2024)', file: 'i', sizeGB: 6.6, minVRAM: 8, ctx: 32768, buckets: ['jack-of-all-trades'] },
@@ -112,6 +113,15 @@ const P = page();
   eq(meta, 'Light · 5.4 GB download · suits 6 GB VRAM or more · 32,768 token context', 'each row starts with its size class');
   const bare = P.els['model-catalog-list'].children[10].children[1].textContent;
   eq(bare, '1.0 GB download', 'a model with no figure has no class, and nothing invented');
+}
+
+console.log('\n=== a MoE model says it also suits a smaller card (issue #65) ===');
+{
+  const moe = P.els['model-catalog-list'].children[5].children[1].textContent;
+  eq(moe, 'Heavy · 22.0 GB download · suits 24 GB VRAM or more, or 8 GB with 32 GB system RAM · 8,192 token context',
+     'Qwen3.6 35B-A3B: or 8 GB with 32 GB system RAM');
+  const dense = P.els['model-catalog-list'].children[9].children[1].textContent;
+  ok(!/system RAM/.test(dense), 'a dense model says nothing about system RAM', dense);
 }
 
 console.log('\n=== type ===');

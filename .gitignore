@@ -84,6 +84,7 @@ hardware.ini
 installer-linux/vendor/
 installer-linux/stage/
 installer-linux/dist/
+installer-linux/stage-appimage/
 
 # installer-fedora build artefacts. Same shape as the Debian ones above, and
 # none of them were ignored -- a single build left an rpmbuild tree and a
@@ -132,3 +133,8 @@ setup-complete.json
 .swap-in-progress
 hardware.json.tmp
 hardware.ini.tmp
+
+# Local history migration receipt (1.7.6 hotfix, internal/state/legacy.go)
+legacy-import.json
+# launch.bat's "first-run setup not finished" mark (cmd/gobbonet/launch.go)
+.gobbonet-setup-pending

@@ -144,7 +144,9 @@ function openFolderPicker(threadId, event) {
   if (!t) return;
   const mkItem = (id, name, active) =>
     `<button class="pop-item${active?' pop-item-active':''}" onclick="moveThread('${escapeJsAttr(threadId)}','${escapeJsAttr(id)}')">&#128193; ${escapeHtml(name)}</button>`;
-  let items = mkItem('__none__', 'No folder', !t.folderId);
+  // Same rule as renderSidebar: a folderId with no folder here is "No folder".
+  const inFolder = !!t.folderId && state.folders.some(f => f.id === t.folderId);
+  let items = mkItem('__none__', 'No folder', !inFolder);
   if (state.folders.length === 0)
     items += `<div class="pop-hint">No folders yet — click + FOLDER</div>`;
   else
@@ -296,8 +298,17 @@ function renderSidebar() {
     return t.name.toLowerCase().includes(query);
   };
 
+  // A folderId that names no folder on this install is unfiled, not invisible.
+  // It happens when a thread arrives from somewhere its folder never existed --
+  // an export from another install, or a folder deleted on another device --
+  // and the thread then matched neither a folder section nor this list, so it
+  // was stored but never drawn (issue #61). Decided at paint time rather than
+  // by rewriting folderId on load: the stored value is left alone, so device
+  // sync sees no change, and the thread drops back into place if the folder
+  // turns up later.
+  const folderIds = new Set(state.folders.map(f => f.id));
   const pinned  = state.threads.filter(t =>  t.pinned && matches(t));
-  const unfiled = state.threads.filter(t => !t.pinned && !t.folderId && matches(t));
+  const unfiled = state.threads.filter(t => !t.pinned && !(t.folderId && folderIds.has(t.folderId)) && matches(t));
 
   let html = '';
 

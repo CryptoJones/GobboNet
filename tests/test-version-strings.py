@@ -46,6 +46,20 @@ class VersionStrings(unittest.TestCase):
         self.assertNotRegex(nsi, r'(?m)^\s*(OutFile|VIProductVersion|!define\s+VERSION)\s+"?\d+\.\d+',
                             'installer/gobbonet.nsi grew a version literal')
 
+    def test_fedora_package_docs_follow_version(self):
+        # FEDORA.md ships inside the .rpm as its doc, and its dnf command names
+        # the package; the spec's changelog is what `rpm -q --changelog` shows.
+        # Both are hand-edited per release, and both were left at 1.7.7 until
+        # the 1.7.8 packaging step (CHANGELOG-1.7.8-fedora-installer.md).
+        fedora = (ROOT / 'installer-fedora' / 'FEDORA.md').read_text(encoding='utf-8')
+        self.assertTrue('sudo dnf install ./gobbonet-%s-*.fedora.x86_64.rpm' % VERSION in fedora,
+                        'installer-fedora/FEDORA.md should name the %s package' % VERSION)
+        spec = (ROOT / 'installer-fedora' / 'gobbonet.spec').read_text(encoding='utf-8')
+        newest = re.search(r'(?m)^%changelog\n\* .* - (\S+)$', spec)
+        self.assertTrue(newest and newest.group(1).startswith(VERSION + '-'),
+                        "gobbonet.spec's newest changelog entry should be for %s, not %s"
+                        % (VERSION, newest.group(1) if newest else 'missing'))
+
 
 if __name__ == '__main__':
     unittest.main()

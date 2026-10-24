@@ -115,11 +115,37 @@ func TestLanBindHelpNamesTheConfigFile(t *testing.T) {
 	cfg := config.Default()
 	cfg.Path = "/etc/gobbonet/config.toml"
 
-	joined := strings.Join(lanBindHelp(cfg), "\n")
-	if !strings.Contains(joined, cfg.Path) {
-		t.Errorf("help does not name the config file:\n%s", joined)
+	for _, goos := range []string{"windows", "linux", "darwin"} {
+		joined := strings.Join(lanBindHelpFor(goos, cfg), "\n")
+		if !strings.Contains(joined, cfg.Path) {
+			t.Errorf("%s help does not name the config file:\n%s", goos, joined)
+		}
 	}
-	if !strings.Contains(joined, "excludedportrange") {
+	if joined := strings.Join(lanBindHelpFor("windows", cfg), "\n"); !strings.Contains(joined, "excludedportrange") {
 		t.Errorf("help omits the Windows reserved-range check:\n%s", joined)
+	}
+}
+
+// TestLanBindHelpIsPerPlatform -- issue #63: Linux users were sent to netsh and
+// setup-lan.bat, neither of which exists there.
+func TestLanBindHelpIsPerPlatform(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenPort = 9070
+	win := strings.Join(lanBindHelpFor("windows", cfg), "\n")
+	if strings.Contains(win, "below 1024") || strings.Contains(win, "ss -ltnp") {
+		t.Errorf("Windows help carries Unix steps:\n%s", win)
+	}
+	for goos, holder := range map[string]string{"linux": "ss -ltnp | grep :9070", "darwin": "lsof -nP -iTCP:9070"} {
+		got := strings.Join(lanBindHelpFor(goos, cfg), "\n")
+		for _, bad := range []string{"netsh", "setup-lan.bat", "excludedportrange", "Administrator"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("%s help mentions %q:\n%s", goos, bad, got)
+			}
+		}
+		for _, want := range []string{"below 1024", holder, "gobbonet doctor"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s help is missing %q:\n%s", goos, want, got)
+			}
+		}
 	}
 }

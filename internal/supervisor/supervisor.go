@@ -36,9 +36,11 @@ const (
 )
 
 const (
-	// swapTimeout matches the client's own 3-minute poll budget in
-	// pollSwapStatus(). Going longer would leave the UI showing a failure while
-	// the server still believed it was working.
+	// swapTimeout is the load timeout when Options.LoadTimeout is unset. The
+	// server sets it from model_load_timeout_seconds in config.toml (default
+	// 180), and /swap-status reports it so the chat page's poll can outlast it:
+	// the page must never give up while the server still believes it is
+	// working, or the user sees a failure with no reason for it.
 	swapTimeout = 3 * time.Minute
 
 	// portFreeTimeout bounds the wait for the old server to release the port.
@@ -74,7 +76,8 @@ type Options struct {
 	// which is what /perf calls; it takes effect on the next llama-server
 	// start, i.e. the swap the client drives immediately afterwards.
 	Tuning Tuning
-	// LoadTimeout is normally three minutes; tests can use a short deadline.
+	// LoadTimeout bounds one model load. From model_load_timeout_seconds in
+	// config.toml; zero means swapTimeout. Tests use a short deadline.
 	LoadTimeout time.Duration
 	// RecoveryBackoff is the first wait before restarting a crashed engine,
 	// doubling to two minutes. Normally one second; tests can shorten it.
@@ -125,6 +128,9 @@ type Status struct {
 	Message   string `json:"message,omitempty"`
 	StartedAt int64  `json:"started_at,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"`
+	// LoadTimeoutSeconds is how long this server lets a load run. The chat
+	// page waits that long plus a margin before it gives up on its own.
+	LoadTimeoutSeconds int `json:"load_timeout_seconds,omitempty"`
 }
 
 // Supervisor manages one llama-server process.
@@ -250,7 +256,17 @@ func (s *Supervisor) CurrentFile() string {
 func (s *Supervisor) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.status
+	st := s.status
+	st.LoadTimeoutSeconds = int(s.loadTimeout() / time.Second)
+	return st
+}
+
+// loadTimeout is how long one load may take.
+func (s *Supervisor) loadTimeout() time.Duration {
+	if s.opts.LoadTimeout > 0 {
+		return s.opts.LoadTimeout
+	}
+	return swapTimeout
 }
 
 func (s *Supervisor) setStatus(phase, file, name, message string, startedAt int64) {
@@ -374,7 +390,7 @@ func (s *Supervisor) BuildArgs(rec models.Record, modelPath string) []string {
 		"-lv", "4",
 	}
 	if tune.GPULayers == -1 {
-		args = append(args, "--fit", "on", "--fit-target", itoaInt(s.opts.GPUReserveMiB), "--fit-ctx", itoaInt(tune.CtxSize))
+		args = append(args, "--fit", "on", "--fit-target", itoaInt(s.fitTargetMiB(rec)), "--fit-ctx", itoaInt(tune.CtxSize))
 	}
 	if useJinja {
 		args = append(args, "--jinja")
@@ -392,6 +408,35 @@ func (s *Supervisor) BuildArgs(rec models.Record, modelPath string) []string {
 }
 
 func itoaInt(n int) string { return fmt.Sprintf("%d", n) }
+
+// MoEFitTargetMiB is the least free-VRAM target automatic placement uses for a
+// Mixture-of-Experts model. gpu_reserve_mib still applies when it is larger.
+//
+// Why MoE models need more room than dense ones: the engine's fit pass is
+// MoE-aware and already keeps most expert weights in system RAM, but on a card
+// the model does not fit it lands right at the target, and the 1024 MiB default
+// does not cover the compute buffers allocated after loading plus whatever the
+// desktop holds. The driver then pages ~1 GB of the engine's allocations out to
+// system RAM, silently. Measured on an 8 GB RTX 4070 Laptop with the pinned
+// engine, through gobbonet.exe, stock config (issue #65):
+//
+//	Qwen3.6 35B-A3B   13.3 t/s at 1024  ->  21.6 t/s at 2048
+//	gpt-oss 20B        9.3 t/s at 1024  ->  20.3 t/s at 2048
+//	Gemma 4 26B-A4B   prompt 54 t/s     ->  169 t/s      (generation unchanged)
+//
+// Dense models are not affected by this floor (they keep gpu_reserve_mib), and
+// they should not be: with 2048 a dense 9B that fit with 1024 lost 4 of 33
+// layers to the CPU and dropped from 38.7 to 22.4 t/s. A MoE model that fits
+// entirely with 1 GB spare pays at most one layer's experts for the extra room.
+const MoEFitTargetMiB = 2048
+
+// fitTargetMiB is the --fit-target handed to llama-server for rec.
+func (s *Supervisor) fitTargetMiB(rec models.Record) int {
+	if rec.ExpertCount > 0 && s.opts.GPUReserveMiB < MoEFitTargetMiB {
+		return MoEFitTargetMiB
+	}
+	return s.opts.GPUReserveMiB
+}
 
 // --- Process lifecycle -----------------------------------------------------
 
@@ -623,11 +668,7 @@ func (s *Supervisor) load(file string) error {
 	if err := s.start(file); err != nil {
 		return err
 	}
-	timeout := s.opts.LoadTimeout
-	if timeout <= 0 {
-		timeout = swapTimeout
-	}
-	if err := s.waitHealthy(time.Now().Add(timeout)); err != nil {
+	if err := s.waitHealthy(time.Now().Add(s.loadTimeout())); err != nil {
 		if cleanup := s.stop(); cleanup != nil {
 			return fmt.Errorf("%w; cleanup: %v", err, cleanup)
 		}
@@ -818,7 +859,10 @@ func (s *Supervisor) waitHealthy(deadline time.Time) error {
 	if msg := s.stderr.LastError(); msg != "" {
 		return fmt.Errorf("%s", msg)
 	}
-	return fmt.Errorf("model did not respond within %s", swapTimeout)
+	// The configured timeout, not the default: the message has to name the
+	// number the user can change, and where.
+	return fmt.Errorf("model did not finish loading within %s. A big model on a slow disk or the CPU can need longer: "+
+		"raise model_load_timeout_seconds in config.toml (CONFIG > Config File) and restart GobboNet", s.loadTimeout())
 }
 
 // Boot starts the initial model. Picks the configured model if there is one,

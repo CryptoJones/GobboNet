@@ -62,6 +62,8 @@ saved considerably more time than the patch that followed them.
   launch.bat guidance. Issue #43.
 - @Alunatopia - Reported the Windows "drive specified" startup messages.
   Issue #36.
+- @Deven-Eve - Built the first GobboNet AppImage from the Debian package,
+  scripted it, and tested it on CachyOS with KDE Plasma. Issue #53.
 - larckdrakengold - Found the home-screen character list snapping back to the
   top on its own, traced it to the five-second re-render, and shared the
   working fix. 1.7.7.

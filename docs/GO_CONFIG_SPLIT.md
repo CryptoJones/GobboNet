@@ -1,6 +1,22 @@
-Now I have the complete picture. Here's the design for the shared config file that bridges both launchers to the Go server.
+# Shared config file design (historical)
 
----
+> **Status:** the design note written before the Go server's config was built,
+> kept for its reasoning. Where it and the code disagree, the code wins.
+> `gobbonet config keys` lists the real keys, and the default `config.toml` the
+> server writes documents each one. What changed since:
+>
+> - **There is no `launch.sh`.** Linux runs `gobbonet-launch` and the setup
+>   page from the `.deb`, `.rpm`, AppImage or ZIP (`LINUX-START-HERE.md`).
+> - **The config is in the same place on both platforms:**
+>   `$XDG_CONFIG_HOME/gobbonet/config.toml`, normally
+>   `~/.config/gobbonet/config.toml` (on Windows,
+>   `%USERPROFILE%\.config\gobbonet\config.toml`). It is not beside
+>   `launch.bat`. `GOBBONET_CONFIG` still overrides it.
+> - **Conversations and the engine's log** are in the data folder,
+>   `~/.local/share/gobbonet`. `gobbonet doctor` shows both paths.
+>
+> The opening line of this file used to be text pasted from the assistant that
+> drafted it. It was removed in 1.7.8 (issue #63).
 
 ## Shared Config File Design
 

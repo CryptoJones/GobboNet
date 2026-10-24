@@ -11,7 +11,7 @@
 ================================================================ */
 
 /* ================================================================
-   SERVER PRESETS — the [ui] table from gobbonet.toml
+   SERVER PRESETS — the [ui] table from config.toml
 
    The config file has always been the server's: URLs, ports, paths, GPU
    layers. The things people actually change day to day live in CONFIG, in the
@@ -100,7 +100,7 @@ async function loadServerPresets() {
     serverPresets.loaded = true;
   }
   if (serverPresets.unknown.length || serverPresets.mistyped.length) {
-    console.warn('[presets] ignored entries in the [ui] section of gobbonet.toml:',
+    console.warn('[presets] ignored entries in the [ui] section of config.toml:',
       { unknown: serverPresets.unknown, mistyped: serverPresets.mistyped });
   }
   return serverPresets;
@@ -187,7 +187,7 @@ function exportData(type) {
   // carry conversations from any era of the app.
   if (type === 'threads') {
     downloadJSON({ gobbonet_export: 'threads', version: 1, schemaVersion: STATE_SCHEMA_VERSION,
-      exported: Date.now(), threads: state.threads },
+      exported: Date.now(), threads: state.threads, folders: _threadFolders(state.threads) },
       `gobbonet-threads-${ts}.json`);
   } else if (type === 'cards') {
     downloadJSON({ gobbonet_export: 'cards', version: 1, exported: Date.now(), characterCards: state.characterCards },
@@ -282,6 +282,7 @@ function exportThread(id, event) {
     schemaVersion: STATE_SCHEMA_VERSION,
     exported: Date.now(),
     threads: [thread],
+    folders: _threadFolders([thread]),
     characterCards: cards,
     personaCards: personas
   }, `gobbonet-thread-${stem}-${new Date().toISOString().slice(0, 10)}.json`);
@@ -347,6 +348,54 @@ function _mergeBundledCast(data) {
   return parts.length ? ' Also added ' + parts.join(', ') + '.' : '';
 }
 
+/** The folders a set of threads sits in, for a threads export (issue #61).
+ *
+ *  A thread carries its folder by id only. Exported without the folder, it
+ *  arrived on another install pointing at an id that did not exist there, and
+ *  the sidebar drew it nowhere -- imported, counted, and invisible. Only id and
+ *  name travel: `collapsed` is how one person's sidebar happens to look. */
+function _threadFolders(threads) {
+  const used = new Set((threads || []).map(t => t && t.folderId).filter(Boolean));
+  return (state.folders || [])
+    .filter(f => f && used.has(f.id))
+    .map(f => ({ id: f.id, name: f.name }));
+}
+
+/** Give imported threads a folder that exists here (issue #61).
+ *
+ *  For each new thread whose folder is not on this install, in order:
+ *    1. a local folder with the same name takes it -- recreating "Campaigns"
+ *       by hand and importing into it is what people try first, and matching
+ *       by id alone made that silently not work;
+ *    2. otherwise the folder from the file is created, keeping its id, so a
+ *       second thread from the same folder lands beside the first;
+ *    3. a file with no folder record for it (every export before this fix)
+ *       puts the thread in the unfiled list.
+ *  Runs before the threads are added, on the imported copies only; threads
+ *  already here are not touched. */
+function _placeImportedThreads(threads, exportedFolders) {
+  if (!Array.isArray(state.folders)) state.folders = [];
+  const fromFile = new Map((Array.isArray(exportedFolders) ? exportedFolders : [])
+    .filter(f => f && typeof f.id === 'string' && f.id && typeof f.name === 'string')
+    .map(f => [f.id, f]));
+  let created = 0, unfiled = 0;
+  for (const t of threads) {
+    if (!t || !t.folderId) continue;
+    if (state.folders.some(f => f.id === t.folderId)) continue;
+    const src = fromFile.get(t.folderId);
+    const name = src ? src.name.trim() : '';
+    if (!name) { t.folderId = null; unfiled++; continue; }
+    const sameName = state.folders.find(f => String(f.name || '').trim() === name);
+    if (sameName) { t.folderId = sameName.id; continue; }
+    state.folders.push({ id: src.id, name, collapsed: false });
+    created++;
+  }
+  const parts = [];
+  if (created) parts.push(` Recreated ${created} folder(s).`);
+  if (unfiled) parts.push(` ${unfiled} thread(s) had no matching folder and are in the unfiled list.`);
+  return parts.join('');
+}
+
 function importData(fileInput, type) {
   const file = fileInput.files[0];
   if (!file) return;
@@ -379,6 +428,7 @@ function importData(fileInput, type) {
       // Merge: add threads whose ID doesn't already exist
       const existingIds = new Set(state.threads.map(t => t.id));
       const newThreads = data.threads.filter(t => !existingIds.has(t.id));
+      const folderNote = _placeImportedThreads(newThreads, data.folders);
       state.threads = [...state.threads, ...newThreads];
 
       // A single-thread export carries the characters and personas the
@@ -389,7 +439,7 @@ function importData(fileInput, type) {
       const castNote = _mergeBundledCast(data);
 
       saveState(); render();
-      showStatus(`✓ Imported ${newThreads.length} thread(s). ${data.threads.length - newThreads.length} skipped (already exist).` + castNote, true);
+      showStatus(`✓ Imported ${newThreads.length} thread(s). ${data.threads.length - newThreads.length} skipped (already exist).` + folderNote + castNote, true);
 
     } else if (type === 'cards') {
       if (!Array.isArray(data.characterCards)) { showStatus('✗ No characterCards array found.', false); return; }
@@ -927,11 +977,52 @@ function renderUpgradeRecovery() {
     select.appendChild(option);
   }
   document.getElementById('upgrade-recovery-server').style.display = upgradeServerProfiles.length ? '' : 'none';
+  // DATA marks that it holds a recovery with an amber dot and a tooltip. It
+  // used to read "// DATA — RECOVERY", which is wider than its half of the
+  // sidebar row and ran out past the sidebar's edge.
   const badge = document.getElementById('data-btn');
-  if (badge) badge.textContent = available || message ? '// DATA — RECOVERY' : '// DATA';
-  // Visible on mobile too, where the sidebar may be closed.
+  if (badge) {
+    badge.textContent = '// DATA';
+    const flagged = !!(available || message);
+    if (badge.classList) badge.classList.toggle('has-recovery', flagged);
+    badge.title = flagged ? 'Older history or a storage notice: open DATA, Upgrade recovery'
+                          : 'Export, import, and purge your data';
+  }
+  // The bar under the chat header. Visible on mobile too, where the sidebar
+  // may be closed -- unless it was hidden for exactly what it would say now.
   const notice = document.getElementById('upgrade-recovery-notice');
-  if (notice) notice.style.display = available || message ? '' : 'none';
+  if (notice) notice.style.display = (available || message) && !recoveryNoticeDismissed() ? '' : 'none';
+  const text = document.getElementById('upgrade-recovery-notice-text');
+  if (text) text.textContent = message || 'Older history from before an upgrade was kept separately. Nothing is lost.';
+}
+
+/* Hiding the bar. The older copies are kept for good, so without this the bar
+   came back on every load, for ever. Hidden, it stays hidden for the same
+   offer -- the same older browser copy and the same server recovery copies --
+   and comes back when that changes. A storage warning (the message) is hidden
+   for this visit only: it says something is wrong now, and next time it may be
+   something else. DATA's badge and its Upgrade recovery section stay. */
+const RECOVERY_NOTICE_KEY = 'gobbonet_recovery_notice_hidden';
+let _recoveryNoticeHiddenNow = false;
+function recoveryNoticeSignature() {
+  const browser = typeof legacyBrowserRecovery !== 'undefined' && legacyBrowserRecovery;
+  const message = typeof storageRecoveryMessage === 'string' ? storageRecoveryMessage : '';
+  return JSON.stringify([browser ? String(browser.raw || '').length : 0, upgradeServerProfiles.slice().sort(), message]);
+}
+function recoveryNoticeDismissed() {
+  if (_recoveryNoticeHiddenNow) return true;
+  const message = typeof storageRecoveryMessage === 'string' ? storageRecoveryMessage : '';
+  if (message) return false;
+  try { return typeof localStorage !== 'undefined' && localStorage.getItem(RECOVERY_NOTICE_KEY) === recoveryNoticeSignature(); }
+  catch (_) { return false; }
+}
+function dismissUpgradeRecoveryNotice() {
+  _recoveryNoticeHiddenNow = true;
+  const message = typeof storageRecoveryMessage === 'string' ? storageRecoveryMessage : '';
+  if (!message) {
+    try { if (typeof localStorage !== 'undefined') localStorage.setItem(RECOVERY_NOTICE_KEY, recoveryNoticeSignature()); } catch (_) {}
+  }
+  renderUpgradeRecovery();
 }
 async function preserveBeforeUpgradeRecovery() {
   const blob = buildStateBlob();

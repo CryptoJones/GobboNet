@@ -1,6 +1,8 @@
-# GobboNet 1.7.7 — Linux
+# GobboNet 1.7.8 — Linux
 
-Install the Debian package with `sudo apt install ./gobbonet_1.7.7+go.*_amd64.deb`, then run `gobbonet` as your normal user or select GobboNet in the application menu. On Fedora, install the RPM instead: `sudo dnf install ./gobbonet-1.7.7-*.fedora.x86_64.rpm` (see `installer-fedora/FEDORA.md`).
+Install the Debian package with `sudo apt install ./gobbonet_1.7.8*_amd64.deb`, then run `gobbonet` as your normal user or select GobboNet in the application menu. On Fedora, install the RPM instead: `sudo dnf install ./gobbonet-1.7.8-*.fedora.x86_64.rpm` (see `installer-fedora/FEDORA.md`).
+
+For the AppImage, make it executable and run it: `chmod +x GobboNet-*-x86_64.AppImage`, then `./GobboNet-*-x86_64.AppImage`, or double-click it in your file manager. It is the Debian package's files in one file, with nothing to install. It needs x86_64 Linux with glibc 2.34 or newer, Bash, Python 3 for the first-run setup, and `fusermount`, which almost every desktop already has. Without FUSE, run it with `--appimage-extract-and-run`. Your settings, models and conversations go to the same folders the packages use, so you can switch between the AppImage and a package without losing anything. It never checks for updates: to update, download the new AppImage and delete the old one.
 
 For the ZIP, extract it, open a terminal in GobboNet and run `./gobbonet`. The ZIP includes a Linux amd64 runtime and the editable source. It needs Python 3.8+, Bash, coreutils, xdg-utils and the same engine libraries listed in the Debian package. Keep the extracted folder in place while using it. Do not run the application with sudo.
 
@@ -15,6 +17,8 @@ Editing `chat.html`, `js/` or `css/` at the root of the ZIP changes nothing by i
 Welcome → data/model location → password → web port → firewall explanation → local or LAN launch → bundled llama.cpp engine → model picker and download → optional Nomic embeddings → LAUNCH.
 
 New in 1.7.7: picking a model that needs more GPU memory than the graphics card has asks before downloading it, as `launch.bat` does on Windows. If the card cannot be read, nothing is asked.
+
+New in 1.7.8: pressing Enter in a field moves to the next step. Mixture-of-Experts models say they also suit an 8 GB card with enough system RAM, and on such a machine the GPU-memory question is not asked. If Python 3 is missing, the first run says so instead of failing.
 
 The wizard opens in your default browser. The chat opens automatically after the server starts listening. Large models can take several minutes to load. Reopening GobboNet opens the existing chat instead of starting a second server. The terminal remains attached to the server; Ctrl+C stops it and the optional embedding engine.
 
@@ -33,7 +37,7 @@ Linux has no Windows Defender prompt. The wizard explains the firewall equivalen
 - `gobbonet serve ...`: explicit server command; preserves advanced server flags and does not run the setup shell.
 - `gobbonet doctor`, `gobbonet config ...`: existing administration commands.
 
-For the ZIP, substitute `./gobbonet` in those commands. Launch errors and URLs are in `$XDG_DATA_HOME/gobbonet/launch.log`, normally `~/.local/share/gobbonet/launch.log`.
+For the ZIP, substitute `./gobbonet` in those commands, and for the AppImage the AppImage file (`./GobboNet-*-x86_64.AppImage doctor`). To remove the AppImage, run `gobbonet uninstall` from it to clear your data, then delete the file. Launch errors and URLs are in `$XDG_DATA_HOME/gobbonet/launch.log`, normally `~/.local/share/gobbonet/launch.log`.
 
 ## Changes and validation
 

@@ -34,6 +34,13 @@ type Entry struct {
 	Ctx     int     // context size to configure when this model is picked
 	KV      string  // kv_cache_type to configure alongside Ctx
 
+	// MoEMinVRAM and MinRAM are the Mixture-of-Experts allowance (issue #65):
+	// the model also fits a card of MoEMinVRAM GB when the machine has MinRAM
+	// GB of system RAM, because automatic placement keeps most experts in RAM.
+	// Zero for dense models, and for catalogues that predate the fields.
+	MoEMinVRAM int
+	MinRAM     int
+
 	// SHA256 is the expected hash, recorded in the catalogue at generation
 	// time. Its value is that it does NOT come from the download host: the
 	// weights and their LFS pointer both come from HuggingFace, so verifying
@@ -56,6 +63,18 @@ type Entry struct {
 	// "moe", "cpu-friendly") and free text from the catalogue author.
 	Tags  []string
 	Notes string
+}
+
+// Fits reports whether the model suits a machine with vramGB of GPU memory and
+// ramGB of system RAM: the whole model's MinVRAM, or -- for a Mixture-of-
+// Experts model -- its smaller MoEMinVRAM card with MinRAM of RAM beside it.
+// An unknown figure is 0 and confirms nothing.
+func (e Entry) Fits(vramGB, ramGB int) bool {
+	if vramGB > 0 && vramGB >= e.MinVRAM {
+		return true
+	}
+	return e.MoEMinVRAM > 0 && e.MinRAM > 0 &&
+		vramGB >= e.MoEMinVRAM && ramGB >= e.MinRAM
 }
 
 // DownloadURL is where the weights live.
@@ -167,6 +186,9 @@ func Load(path string) (*Catalog, error) {
 			Ctx:     atoiOr(kv["ctx"], 0),
 			KV:      kv["kv"],
 			Tags:    parseTags(kv["tags"]),
+
+			MoEMinVRAM: atoiOr(kv["moe_min_vram"], 0),
+			MinRAM:     atoiOr(kv["min_ram"], 0),
 		}
 		if v, err := strconv.ParseFloat(kv["size_gb"], 64); err == nil {
 			e.SizeGB = v

@@ -348,6 +348,63 @@ function mergeLoreAfterPass(thread, before, after) {
 // supposed to free up in the first place.
 const LORE_MAX_CHARS = 2400;
 
+/* ================================================================
+   THE LORE PROMPT
+
+   What the model is told when old messages are written down as one line of
+   lore. It used to show "the shape" with a worked example -- a vampire story
+   about Lucia and Vasch -- and small models copied it: "Lucia" turned up in
+   people's lore, and from there in their chats, because lore is fed back in
+   as established fact.
+
+   So the default names nobody and tells no story. The shape is shown as a
+   template whose <...> parts the model has to fill from the messages; rule 4
+   says to use only names that appear there; and a reply that is still the
+   template (_loreEchoesTemplate) is not stored.
+
+   Kept short on purpose: a small model follows six plain rules better than a
+   page of them. A card can replace the whole prompt (card.loreCustomPrompt,
+   card.lorePrompt -- the editor's "Edit the lore summary prompt" box); the
+   pipeline around it stays the same: the reply is cleaned to one line of at
+   most two sentences and appended, and SKIP adds nothing.
+================================================================ */
+const LORE_DEFAULT_PROMPT = 'You keep a short log of what happens in a story or conversation. '
+  + 'You are given the entries recorded so far and the newest messages. '
+  + 'Write ONE new entry about the newest messages only.\n\n'
+  + 'Rules:\n'
+  + '1. One sentence, under 20 words, past tense.\n'
+  + '2. Only what is new. Never repeat a recorded entry, the setting, or who anyone is.\n'
+  + '3. Concrete: who did what, and what was decided, found out or changed. No mood or scenery.\n'
+  + '4. Use only names that appear in the messages. Never invent a name.\n'
+  + '5. Write the sentence alone: no label, bullet or quotes.\n'
+  + '6. If nothing important happened, write exactly: SKIP\n\n'
+  + 'An entry looks like this, with the <...> parts taken from the messages:\n'
+  + '<who> <did what> <to whom or where>.';
+
+// Longest custom prompt a card keeps. The prompt is sent with every
+// compression pass, so it is room taken from the messages being summarised.
+const LORE_PROMPT_MAX_CHARS = 4000;
+
+/* The prompt a card compresses with: its own when it has ticked the box and
+   written one, the default otherwise. {{char}} and {{user}} work in a custom
+   prompt; the default needs neither. */
+function loreSystemPrompt(card) {
+  const own = (card && card.loreCustomPrompt && typeof card.lorePrompt === 'string')
+    ? card.lorePrompt.trim().slice(0, LORE_PROMPT_MAX_CHARS) : '';
+  if (!own) return LORE_DEFAULT_PROMPT;
+  let userName = 'the user';
+  try { userName = (getActivePersona() || {}).name || userName; } catch (_) {}
+  return own
+    .replace(/\{\{char\}\}/gi, (card && card.name) || 'the character')
+    .replace(/\{\{user\}\}/gi, userName);
+}
+
+/* The reply is the default prompt's template, or part of it, rather than an
+   entry: "<who> escaped" is not something to store as fact. */
+function _loreEchoesTemplate(text) {
+  return /<\s*(who|did what|to whom or where)\s*>/i.test(String(text || ''));
+}
+
 /**
  * Run one compression pass, on a different local model if the card asks for
  * one, and put the chat model back afterwards.
@@ -380,8 +437,9 @@ async function compressWithCardModel(existingLore, toArchive, authored, tokenLim
   const have = (typeof _currentModelFile === 'string') ? _currentModelFile : '';
 
   // Nothing chosen, no file server to swap with, or it is already loaded.
+  const prompt = loreSystemPrompt(card);
   if (!want || !IS_SERVED || want === have) {
-    return await summarizeForLore(existingLore, toArchive, authored, tokenLimit);
+    return await summarizeForLore(existingLore, toArchive, authored, tokenLimit, prompt);
   }
 
   let borrowed = false;
@@ -395,7 +453,7 @@ async function compressWithCardModel(existingLore, toArchive, authored, tokenLim
   }
 
   try {
-    return await summarizeForLore(existingLore, toArchive, authored, tokenLimit);
+    return await summarizeForLore(existingLore, toArchive, authored, tokenLimit, prompt);
   } finally {
     if (borrowed && have) {
       try {
@@ -427,7 +485,7 @@ async function compressWithCardModel(existingLore, toArchive, authored, tokenLim
    that a stuck one is an inconvenience rather than a lockup.
 
    45 s is the default. Since roadmap 1.7.7 #6c it is a setting (CONFIG ->
-   Lore Compression, or loreTimeoutSeconds in gobbonet.toml's [ui] table),
+   Lore Compression, or loreTimeoutSeconds in config.toml's [ui] table),
    because "a slow local model" is exactly what a CPU-only install runs, and
    those were the ones losing their oldest messages unsummarised. Read per
    pass through loreTimeoutMs(). The floor is 5 s: below that no model
@@ -618,7 +676,7 @@ function _cleanLoreBeat(text) {
   return t;
 }
 
-async function summarizeForLore(existingLore, messagesToSummarize, authoredLore, fallbackCtx) {
+async function summarizeForLore(existingLore, messagesToSummarize, authoredLore, fallbackCtx, systemPrompt) {
   _loreLastOutcome = null;
   _loreLastKind = 'ok';
 
@@ -639,38 +697,16 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
   // earlier turns is working memory the model already discarded, and
   // folding it into lore was poisoning future summaries with CoT-of-CoT.
   //
-  // The output is FIELDED rather than a narrative paragraph, and that is
-  // the whole point of this prompt. A free-form story paragraph has to
-  // re-ground the reader every time it changes subject ("Back at the
-  // tavern...", "Still in Ashford..."), so with a recursive fold the
-  // location got restated on every single pass — half a dozen times in a
-  // long session. Fields carry a standing fact exactly once, in one
-  // place, and leave EVENTS free to describe only what changed.
+  // The model writes one new entry per pass, which is appended; it never
+  // rewrites the log. Earlier designs (a rewritten paragraph, then fields)
+  // restated standing facts on every pass, so the log only grew.
   //
-  // The second half of the fix is the word REWRITE. The old prompt said
-  // "fold in" and "updated summary", which reads as append-only: the
-  // model treated the existing summary as immutable and bolted a new
-  // sentence on the end. Nothing ever authorised it to delete, merge or
-  // shorten what was already there, so the summary could only accrete.
-  const sys = 'You are keeping a running list of plot beats for a story. You will be '
-    + 'given the beats recorded so far and the newest stretch of conversation. '
-    + 'Write ONE new beat covering only what happened in the new messages.\n\n'
-    + 'RULES:\n'
-    + '1. One sentence. Two at the absolute most. Under twenty words.\n'
-    + '2. Only what is NEW. If it is already in the recorded beats, do not write '
-    + 'it again - not the setting, not who anyone is, not anything unchanged. '
-    + 'Assume the reader has the earlier beats in front of them.\n'
-    + '3. Concrete: names, places, actions, decisions, reversals. Not mood, not '
-    + 'scenery, not how anyone felt.\n'
-    + '4. Plain past tense. No preamble, no bullet, no quotes, no labels. Output '
-    + 'the sentence and nothing else.\n'
-    + '5. If nothing of consequence happened, reply with exactly: SKIP\n\n'
-    + 'This is the shape:\n'
-    + 'Lucia was turned into a vampire by Vasch.\n'
-    + 'Lucia escaped Vasch\'s mansion.\n'
-    + 'Vasch began hunting Lucia and lost her trail.\n'
-    + 'A resistance group took Lucia in.\n\n'
-    + 'Each of those covers many exchanges, and none repeats the one before it.';
+  // The words themselves are LORE_DEFAULT_PROMPT, above, unless the card
+  // brings its own (loreSystemPrompt). See THE LORE PROMPT for why the
+  // default no longer carries a worked example.
+  const customPrompt = (typeof systemPrompt === 'string' && systemPrompt.trim()
+                        && systemPrompt.trim() !== LORE_DEFAULT_PROMPT) ? systemPrompt.trim() : '';
+  const sys = customPrompt || LORE_DEFAULT_PROMPT;
 
   // The chain starts at the card's authored starting lore, not at the first
   // generated beat. It was never shown to the summariser, so the model had
@@ -749,7 +785,11 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
      through to the hard-trim path below.
   ================================================================ */
 
-  const LORE_TAIL = '=== END ===\nWrite the one new beat now. One sentence. Nothing else.';
+  // The default ends on a reminder of its own rules, which small models
+  // weight by recency. A custom prompt sets its own rules, so its closing
+  // line only asks for the entry.
+  const LORE_TAIL = customPrompt ? '=== END ===\nWrite the new entry now.'
+                                 : '=== END ===\nWrite the one new entry now. One sentence. Nothing else.';
   // Fixed and untrimmable: the instructions, plus the per-request
   // overhead the old code applied as a bare +16 AFTER budgeting.
   const sysTokens = estimateTokens(sys) + 16;
@@ -1050,6 +1090,17 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
     // as established fact.
     summary = _cleanLoreBeat(summary);
 
+    // The template, not an entry. Stored, it would be read back as fact on
+    // every later turn, so it is treated as the failed pass it is.
+    if (summary && _loreEchoesTemplate(summary)) {
+      _loreLastKind = 'failed';
+      _loreLastOutcome = 'the model repeated the prompt\'s template instead of writing an entry. The '
+        + archivedCount + ' oldest message' + (archivedCount === 1 ? ' was' : 's were')
+        + ' dropped from context without being summarised.';
+      console.warn('[lore] template echoed, not stored:', summary);
+      return _appendLoreGapMarker(existingLore, archivedCount);
+    }
+
     if (!summary) {
       // The interesting case. If .reasoning has text but .content does not,
       // the model answered and the thinking-format parser filed the whole
@@ -1099,7 +1150,7 @@ async function summarizeForLore(existingLore, messagesToSummarize, authoredLore,
     // Cap. Beats are short, so 2400 chars holds 20-25 of them, which is a
     // lot of story. When it does overflow, drop from the MIDDLE and keep
     // the first two: the opening beats are the premise everything later
-    // rests on ("Lucia was turned into a vampire by Vasch" explains every
+    // rests on (who the story is about and what set it going explains every
     // line after it), while the middle is the most safely forgotten.
     if (combined.length > LORE_MAX_CHARS) {
       const lines = combined.split('\n').filter(function (l) { return l.trim(); });

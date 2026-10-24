@@ -164,16 +164,85 @@ const stateSync = {
 
 // noteLocked reports whether a response means "signed out", and if so puts the
 // app into the locked state. Returns true when the caller should stop.
+//
+// One 401 is not proof, so the prompt waits for a second opinion: one cheap
+// GET (sessionProbe) of the same kind of route. Only when that is refused as
+// well -- or cannot be asked -- does the tab lock and ask for the password.
+// A tab that is in fact still signed in carries on, and the caller's own
+// retry (the push path re-arms on any error) goes out as usual. Asking for a
+// password over a 401 that the next request did not repeat was the "signed
+// in, tab out, asked again" report: too eager by exactly one request.
+let _lockCheck = null;
 function noteLocked(resp) {
   if (!resp || resp.status !== 401) return false;
   if (stateSync.status === 'locked') return true;   // already asking
+  if (!_lockCheck) {
+    let what = '?';
+    try { what = new URL(resp.url || '', location.href).pathname; } catch (_) {}
+    _lockCheck = confirmSignedOut(what)
+      .catch((e) => { console.warn('[auth] could not show the sign-in prompt:', e && e.message); })
+      .finally(() => { _lockCheck = null; });
+  }
+  return true;
+}
 
+// The route that answers "is this tab signed in?" the same way the state
+// routes do: the session check, and on an encrypted install the unlocked key
+// as well, which /state/* need and the password restores.
+function sessionProbeUrl() {
+  return (typeof STATE_SYNC_AVAILABLE !== 'undefined' && STATE_SYNC_AVAILABLE)
+    ? stateSyncUrl('/info') : '/health-fileserver';
+}
+
+// true: signed in. false: refused (401). null: could not ask.
+async function sessionProbe() {
+  try {
+    const r = await fetch(sessionProbeUrl(), { cache: 'no-store' });
+    return r.status !== 401;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function confirmSignedOut(what) {
+  const signedIn = await sessionProbe();
+  if (stateSync.status === 'locked') return;
+  if (signedIn === true) {
+    console.warn('[auth] ' + what + ' was refused (401), but this tab is still signed in -- ' +
+                 sessionProbeUrl().replace(location.origin, '') + ' answered. Not asking for the password.');
+    return;
+  }
+  console.warn('[auth] signed out: ' + what + ' was refused (401)' +
+               (signedIn === false ? ', and so was a fresh check.' : '; a fresh check could not reach the server.') +
+               ' The gobbonet window logs the reason.');
+  lockSignedOut();
+}
+
+function lockSignedOut() {
   stateSync.status = 'locked';
   stateSync.lastError = 'signed out';
   // Cancel the retry. Re-armed by resumeAfterUnlock() once we are back in.
   if (stateSync.pushTimer) { clearTimeout(stateSync.pushTimer); stateSync.pushTimer = null; }
   updateSyncIndicator();
   showUnlockModal();
+}
+
+// A locked tab is signed in again the moment ANY tab of this browser signs in:
+// the session cookie belongs to the browser, not the tab. So while the prompt
+// is up, look again on every return to the tab and every few seconds while it
+// is on screen, and carry on by itself when the answer changes.
+let _lockRecheckAt = 0;
+let _lockRecheckTimer = null;
+async function recheckLockedSession(reason) {
+  if (stateSync.status !== 'locked') return false;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+  const now = Date.now();
+  if (now - _lockRecheckAt < 1500) return false;
+  _lockRecheckAt = now;
+  if (await sessionProbe() !== true || stateSync.status !== 'locked') return false;
+  console.log('[auth] this browser is signed in again (' + reason + ') -- carrying on without a password here.');
+  hideUnlockModal();
+  resumeAfterUnlock();
   return true;
 }
 
@@ -187,6 +256,7 @@ function serverError(resp, message) {
 function showUnlockModal() {
   const modal = document.getElementById('unlock-modal');
   if (!modal) return;
+  if (!_lockRecheckTimer) _lockRecheckTimer = setInterval(() => { recheckLockedSession('poll').catch(() => {}); }, 5000);
   const err = document.getElementById('unlock-error');
   if (err) { err.textContent = ''; err.style.display = 'none'; }
   modal.classList.add('open');
@@ -195,6 +265,7 @@ function showUnlockModal() {
 }
 
 function hideUnlockModal() {
+  if (_lockRecheckTimer) { clearInterval(_lockRecheckTimer); _lockRecheckTimer = null; }
   const modal = document.getElementById('unlock-modal');
   if (modal) modal.classList.remove('open');
 }
@@ -1179,92 +1250,273 @@ if (typeof window !== 'undefined') {
   window.gobboDiag = gobboDiag;
 }
 
-/**
- * Tokenize banned phrases and build a logit_bias object for the API request.
- * Tries the llama.cpp /tokenize endpoint; if unavailable, skips silently.
- *
- * NOTE on capitalization: BPE/SentencePiece tokenizers encode case INSIDE
- * the token — `[ blue]` and `[ Blue]` are different IDs. An earlier version
- * of this function only generated lowercase variants, which silently let
- * the banned word through whenever it landed at the start of a sentence,
- * proper-noun position, after a quote, etc. We now generate 8 variants
- * per phrase: {lower, Title, UPPER, as-typed} x {no-space, leading-space}.
- *
- * CEILING (worth knowing): logit_bias only suppresses canonical token IDs.
- * The model can still emit the same surface string via a multi-token
- * decomposition (e.g. "blue" -> [bl][ue]). For a hard string-level ban,
- * use a GBNF grammar or a streaming post-filter — neither is wired up here.
- *
- * Returns { logit_bias: {"tokenId": strength, ...} } or {} if nothing to bias.
- */
+/* ================================================================
+   BANNED PHRASES -> logit_bias (issue #51, the stand-in for CFG)
+
+   Real classifier-free guidance needs the full logits of a second, negative
+   prompt, and llama-server does not expose them over HTTP. What it does have
+   is logit_bias, which covers the commonest thing people want from a negative
+   prompt: "stop writing X". This is that, per card.
+
+   logit_bias works per TOKEN, and that is the whole difficulty. The first
+   version of this banned EVERY token of every case variant of every phrase.
+   For a phrase that meant its ordinary words too -- "shivers down her spine"
+   banned " her" and " down" everywhere -- and for a word that splits into
+   pieces it meant fragments: "Chuckle" at the start of a line tokenizes as
+   [Ch][uckle] on many models, and banning [Ch] took out every line starting
+   with "Ch". It also re-tokenized every variant on every message.
+
+   llama-server will also take a word as a string key and tokenize it
+   itself, but it then biases every piece of it, which is the same fragment
+   problem one step removed. So the page still tokenizes, and picks.
+
+   Now:
+     - A single word is banned at its own token, or at its leading piece
+       when it splits and that piece carries most of the word. A piece too
+       short to be the word's own ("Ch", "S"), or one that is a common word
+       in its own right ("what" of "whatever"), is never banned.
+     - A phrase is stopped at its rarest word -- its longest word that is not
+       one of the commonest ones ("a mix of" at "mix"). When that word only
+       splits into pieces too small to ban, the next longest is tried
+       ("shivers down her spine" at "spine": " shivers" is [ sh][ivers] on
+       every model checked). The word is then banned everywhere, which the
+       editor's CHECK says in so many words. A phrase made only of common
+       words is not banned at all.
+     - Tokenization is cached per model, so after the first message a turn
+       costs no extra requests.
+     - At the slider's far end (-100) the bias is `false`, which llama-server
+       reads as "never produce this token".
+   CHECK in the card editor shows exactly what will be banned, with the model
+   that is loaded.
+================================================================ */
+const BANNED_COMMON_WORDS = new Set(('a an the and or but nor so yet for of to in on at by with from into onto upon '
+  + 'off out over under up down as than then that this these those there here i me my mine we us our ours you your '
+  + 'yours he him his she her hers it its they them their theirs who whom whose which what when where why how is am '
+  + 'are was were be been being have has had do does did not no yes if some any all can will would could should just '
+  + 'like more most very also only even well one two').split(' '));
+const BANNED_MAX_PHRASES = 200;
+const _bannedTokenCache = new Map();   // model + '\u0000' + text -> [{ id, piece }]
+const _bannedWordRe = () => /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+
+function _bannedModelKey() {
+  const file = (typeof _currentModelFile !== 'undefined' && _currentModelFile) || '';
+  const am = (typeof activeModel !== 'undefined' && activeModel) || {};
+  return file || am.id || am.name || 'unknown';
+}
+
+/* The phrases, one per line, trimmed, de-duplicated (any case), capped. */
+function bannedPhraseList(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const line of String(typeof raw === 'string' ? raw : '').split('\n')) {
+    const p = line.trim();
+    if (!p || seen.has(p.toLowerCase())) continue;
+    seen.add(p.toLowerCase());
+    out.push(p);
+    if (out.length >= BANNED_MAX_PHRASES) break;
+  }
+  return out;
+}
+
+/* The words a phrase can be banned at, best first. A single word is itself
+   -- the user asked for exactly that word. A phrase offers its words of three
+   letters or more that are not among the commonest, longest (rarest) first,
+   at most four; none when it has none. */
+const BANNED_MAX_CANDIDATES = 4;
+function bannedAnchorCandidates(phrase) {
+  const words = String(phrase || '').match(_bannedWordRe()) || [];
+  if (words.length === 1) return [words[0]];
+  const seen = new Set();
+  const out = [];
+  for (const w of words) {
+    const k = w.toLowerCase();
+    if (w.length < 3 || BANNED_COMMON_WORDS.has(k) || seen.has(k)) continue;
+    seen.add(k);
+    out.push(w);
+  }
+  // Array.prototype.sort is stable: equal lengths keep the phrase's order.
+  return out.sort((a, b) => b.length - a.length).slice(0, BANNED_MAX_CANDIDATES);
+}
+/* The word a phrase is stopped at first; '' when it has none. */
+function bannedAnchorWord(phrase) {
+  return bannedAnchorCandidates(phrase)[0] || '';
+}
+
+/* The forms a word turns up in: as typed, lower, Title, UPPER, each with and
+   without the leading space that marks a word in mid-sentence. */
+function bannedVariants(word) {
+  const lower = word.toLowerCase();
+  const title = lower ? lower[0].toUpperCase() + lower.slice(1) : lower;
+  const out = [];
+  for (const b of [...new Set([word, lower, title, word.toUpperCase()])]) out.push(' ' + b, b);
+  return out;
+}
+
+/* Which token, if any, bans `variant` given how it tokenizes. Its own token
+   when it is one; otherwise its leading piece, when that piece is at least
+   four letters, more than half the word (" Chuck" of "Chuckle", not " tape"
+   of "tapestry"), and not itself a common word ("what" of "whatever") --
+   never a fragment that other words share. Space-only
+   pieces in front are skipped: some SentencePiece models tokenize " word" as
+   [ ][ word]. null when there is nothing safe to ban, or when the engine did
+   not say how the word splits (an older /tokenize without pieces). */
+function bannedTokenFor(variant, toks) {
+  if (!Array.isArray(toks)) return null;
+  let i = 0;
+  while (i < toks.length - 1 && toks[i] && typeof toks[i].piece === 'string' && toks[i].piece.trim() === '') i++;
+  const rest = toks.slice(i);
+  if (!rest.length || !rest[0]) return null;
+  if (rest.length === 1) {
+    // A lone space token is not the word, whatever it was asked for.
+    if (typeof rest[0].piece === 'string' && rest[0].piece.trim() === '') return null;
+    return { id: rest[0].id, piece: rest[0].piece, exact: true };
+  }
+  const piece = rest[0].piece;
+  if (typeof piece !== 'string') return null;
+  const letters = piece.trim();
+  const word = String(variant).trim();
+  if (letters.length >= 4 && letters.length * 2 > word.length && !BANNED_COMMON_WORDS.has(letters.toLowerCase())) {
+    return { id: rest[0].id, piece, exact: false };
+  }
+  return null;
+}
+
+/* /tokenize with pieces, cached per model. Returns [{ id, piece }], or
+   throws when the endpoint is not answering. parse_special is off: a banned
+   word is plain text, and "<|im_end|>" typed into the list must not come back
+   as the end-of-turn token. */
+async function _bannedTokenize(text) {
+  const key = _bannedModelKey() + '\u0000' + text;
+  if (_bannedTokenCache.has(key)) return _bannedTokenCache.get(key);
+  const resp = await privacyFetch(LLAMA_URL + '/tokenize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: text, with_pieces: true, parse_special: false })
+  });
+  if (!resp.ok) throw new Error('/tokenize returned ' + resp.status);
+  const data = await resp.json();
+  const toks = (Array.isArray(data && data.tokens) ? data.tokens : []).map(t =>
+    (t && typeof t === 'object') ? { id: t.id, piece: typeof t.piece === 'string' ? t.piece : null } : { id: t, piece: null })
+    .filter(t => Number.isInteger(t.id) && t.id >= 0);
+  _bannedTokenCache.set(key, toks);
+  if (_bannedTokenCache.size > 4000) _bannedTokenCache.delete(_bannedTokenCache.keys().next().value);
+  return toks;
+}
+
+/* The tokens that ban one word in all its forms, and the forms that have
+   nothing safe to ban. Its forms are tokenized together. Throws when
+   /tokenize is not answering. */
+async function _bannedPlanWord(word) {
+  const variants = bannedVariants(word);
+  const all = await Promise.all(variants.map(v => _bannedTokenize(v)));
+  const tokens = [], unsafe = [], seen = new Set();
+  variants.forEach((v, k) => {
+    const t = bannedTokenFor(v, all[k]);
+    if (!t) { unsafe.push(v); return; }
+    if (!seen.has(t.id)) { seen.add(t.id); tokens.push(t); }
+  });
+  return { tokens, unsafe };
+}
+
+/* What a list of phrases bans with the loaded model. Returns
+     { phrases: [{ phrase, anchor, tokens: [{ id, piece, exact }], unsafe: [variant],
+                   skipped: [word] }], error }
+   `anchor` is the word the phrase is stopped at, and `skipped` the better
+   words tried first that had nothing safe to ban. `error` is set (and
+   phrases empty) when /tokenize is not answering. The cache makes later
+   turns free. */
+async function planBannedPhrases(raw) {
+  const phrases = [];
+  for (const phrase of bannedPhraseList(raw)) {
+    const cands = bannedAnchorCandidates(phrase);
+    const row = { phrase, anchor: cands[0] || '', tokens: [], unsafe: [], skipped: [] };
+    for (const word of cands) {
+      let plan;
+      try { plan = await _bannedPlanWord(word); }
+      catch (e) { return { phrases: [], error: (e && e.message) || String(e) }; }
+      if (plan.tokens.length) { row.anchor = word; row.tokens = plan.tokens; row.unsafe = plan.unsafe; break; }
+      row.skipped.push(word);
+      if (row.skipped.length === 1) row.unsafe = plan.unsafe;
+    }
+    phrases.push(row);
+  }
+  return { phrases, error: null };
+}
+
+/* The bias a card's strength sends. The slider runs -1..-100; anything else
+   (an imported card, a hand-edited backup) is pulled back into that range, so
+   a "banned" list can never PROMOTE its words. -100 is "ban outright":
+   false, which llama-server reads as -infinity -- the token is never
+   produced. */
+function bannedBiasValue(strength) {
+  let s = Number(strength);
+  if (strength === undefined || strength === null || strength === '' || !isFinite(s)) s = -20;
+  s = Math.min(-1, Math.max(-100, s));
+  return s <= -100 ? false : s;
+}
+
 async function buildLogitBias(card) {
-  const raw = (card && card.bannedPhrases) ? card.bannedPhrases.trim() : '';
-  if (!raw) return {};
-
-  const phrases = raw.split('\n').map(p => p.trim()).filter(p => p.length > 0);
-  if (phrases.length === 0) return {};
-
-  const strength = (card.logitBiasStrength !== undefined) ? Number(card.logitBiasStrength) : -20;
+  const raw = (card && typeof card.bannedPhrases === 'string') ? card.bannedPhrases : '';
+  if (!raw.trim()) return {};
+  const plan = await planBannedPhrases(raw);
+  if (plan.error) {
+    console.warn('[logit_bias] /tokenize unavailable, skipping banned phrases:', plan.error);
+    return {};
+  }
+  const value = bannedBiasValue(card.logitBiasStrength);
   const logitBias = {};
-  const tokenizeUrl = LLAMA_URL + '/tokenize';
-
-  // Per-phrase debug record so the user can see exactly what got banned.
-  // Keyed by phrase, value is { variants: [...], tokenIds: [...] }.
-  const debugByPhrase = {};
-
-  // Build full case-coverage variant set. Title-case fills the gap that
-  // bit us before (capitalized at sentence start, dialogue, proper nouns).
-  function caseVariants(phrase) {
-    const lower = phrase.toLowerCase();
-    const upper = phrase.toUpperCase();
-    // Title-case the first character; leave the rest of the lowered form
-    // as-is so multi-word phrases don't get mangled (we want "Blue sky",
-    // not "Blue Sky", since the second word's banned token usually starts
-    // with a space character anyway).
-    const title = lower.length ? lower[0].toUpperCase() + lower.slice(1) : lower;
-    const bases = [...new Set([phrase, lower, title, upper])];
-    const out = [];
-    for (const b of bases) {
-      out.push(b);
-      out.push(' ' + b);
-    }
-    return [...new Set(out)];
-  }
-
-  for (const phrase of phrases) {
-    const variants = caseVariants(phrase);
-    debugByPhrase[phrase] = { variants, tokenIds: [] };
-
-    for (const variant of variants) {
-      try {
-        const resp = await privacyFetch(tokenizeUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: variant })
-        });
-        if (!resp.ok) continue;
-        const data = await resp.json();
-        if (data.tokens && Array.isArray(data.tokens)) {
-          for (const id of data.tokens) {
-            logitBias[String(id)] = strength;
-            debugByPhrase[phrase].tokenIds.push(id);
-          }
-        }
-      } catch (e) {
-        // Tokenizer endpoint not available — skip gracefully
-        console.warn('[logit_bias] /tokenize unavailable, skipping banned phrases:', e.message);
-        return {}; // No point retrying every variant if the endpoint is down
-      }
-    }
-  }
-
+  for (const row of plan.phrases) for (const t of row.tokens) logitBias[String(t.id)] = value;
   const count = Object.keys(logitBias).length;
-  if (count > 0) {
-    console.log(`[logit_bias] Suppressing ${count} token IDs at strength ${strength} (${phrases.length} phrase(s))`);
-    console.log('[logit_bias] Per-phrase breakdown:', debugByPhrase);
-    return { logit_bias: logitBias };
+  if (!count) return {};
+  console.log(`[logit_bias] Suppressing ${count} token IDs at ${value === false ? 'ban' : 'strength ' + value} (${plan.phrases.length} phrase(s))`);
+  console.log('[logit_bias] Per-phrase breakdown:', plan.phrases.map(r => ({
+    phrase: r.phrase, at: r.anchor || null, banned: r.tokens.map(t => t.piece), notSafeToBan: r.unsafe })));
+  return { logit_bias: logitBias };
+}
+
+/* CHECK in the card editor: what the phrases typed there ban, with the model
+   that is loaded, in words. Built as text, never HTML -- the phrases and the
+   pieces are both user or model text. */
+async function checkBannedPhrases() {
+  const out = document.getElementById('banned-phrases-readout');
+  const ta = document.getElementById('card-banned-phrases');
+  if (!out || !ta) return;
+  const raw = ta.value || '';
+  if (!raw.trim()) { out.textContent = 'Nothing to check: the list is empty.'; return; }
+  out.textContent = 'Checking with the loaded model…';
+  const plan = await planBannedPhrases(raw);
+  // The editor moved on (another card, or more typing) while this ran.
+  if (ta.value !== raw) { out.textContent = 'The list changed while checking. Press CHECK again.'; return; }
+  if (plan.error) {
+    out.textContent = 'Can’t check: no model is answering (' + plan.error + '). Load a model and try again.';
+    return;
   }
-  return {};
+  const show = (p) => JSON.stringify(p == null ? '?' : p);
+  const lines = [];
+  const ids = new Set();
+  for (const r of plan.phrases) {
+    const isPhrase = (r.phrase.match(_bannedWordRe()) || []).length > 1;
+    const quoted = (ws) => ws.map(w => '"' + w + '"').join(', ');
+    if (!r.anchor) { lines.push(r.phrase + ' — not banned: every word in it is too common to ban without changing ordinary text.'); continue; }
+    if (!r.tokens.length) {
+      lines.push(r.phrase + ' — not banned: ' + (r.skipped.length > 1
+        ? 'none of ' + quoted(r.skipped) + ' can be banned safely with this model; each splits into pieces too small or too common.'
+        : '"' + r.anchor + '" splits into pieces too small or too common to ban safely with this model.'));
+      continue;
+    }
+    for (const t of r.tokens) ids.add(t.id);
+    let line = r.phrase + ' — ' + (isPhrase
+      ? 'stopped at "' + r.anchor + '"' + (r.skipped.length ? ' (' + quoted(r.skipped) + ' split' + (r.skipped.length === 1 ? 's' : '') + ' too finely)' : '')
+        + ', everywhere it appears, not only in this phrase: '
+      : 'banned: ')
+      + r.tokens.map(t => show(t.piece) + (t.exact ? '' : ' (start of the word)')).join(', ');
+    if (r.unsafe.length) line += '. Left alone in ' + r.unsafe.length + ' form(s) that split too finely, e.g. ' + show(r.unsafe[0]) + '.';
+    lines.push(line);
+  }
+  const value = bannedBiasValue(document.getElementById('card-logit-strength')?.value);
+  lines.unshift(ids.size + ' token(s) ' + (value === false ? 'banned outright' : 'pushed down by ' + value)
+    + ' with ' + _bannedModelKey() + ':');
+  out.textContent = lines.join('\n');
 }
 
 function resetSamplerDefaults() {

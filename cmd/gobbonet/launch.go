@@ -32,6 +32,11 @@ func cmdLaunch(argv []string) error {
 	if err != nil {
 		return err
 	}
+	if !first && !explicit && runtime.GOOS == "windows" {
+		if exe, err := os.Executable(); err == nil {
+			first = launchSetupUnfinished(path, filepath.Dir(exe))
+		}
+	}
 	if first {
 		if runtime.GOOS != "windows" {
 			return errors.New("run gobbonet setup before launching")
@@ -59,6 +64,36 @@ func cmdLaunch(argv []string) error {
 		return cmd.Run()
 	}
 	return cmdServe([]string{"--config", path, "--open"})
+}
+
+// setupPendingName is the mark launch.bat leaves beside itself from the moment
+// it hands the password to gobbonet.exe -- early, so that a first run which
+// stops does not ask for a second password (#63) -- until it reaches :launch.
+// That early write creates config.toml, and launchNeedsSetup serves any
+// config.toml it finds.
+const setupPendingName = ".gobbonet-setup-pending"
+
+// launchSetupUnfinished reports whether launch.bat started setup in dir and
+// stopped before the end, leaving a config that names no engine: what a first
+// run closed during its download or model menu leaves behind. Serving that
+// would open a chat with nothing behind it and never offer setup again, so
+// launch runs setup instead.
+//
+// Both conditions, not the mark alone: "Setup or add a model" runs launch.bat
+// on a working install too, and stopping that leaves the mark beside a config
+// whose engine is set. That install carries on serving.
+func launchSetupUnfinished(path, dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, setupPendingName)); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "launch.bat")); err != nil {
+		return false
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return false
+	}
+	return cfg.ServerExe == ""
 }
 
 func launchNeedsSetup(path string, explicit bool) (bool, error) {

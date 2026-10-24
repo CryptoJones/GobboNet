@@ -127,6 +127,33 @@ def main():
           "; ".join(early) + "  -- these expand once, before the block runs, so the "
           "rule is written for a port literally called %WEB_PORT%")
 
+    # Issue #63: the window title, the banner and two rule names still said
+    # Gemma 4, the model the project started with. The rules are renamed, and
+    # an upgraded machine's old ones are replaced -- deleted, but only after
+    # the rule that takes over is confirmed, so a failed add never strands the
+    # phone without one.
+    print("\nrule and window names (issue #63)")
+    check("the window title and banner say GobboNet",
+          "title GobboNet -- LAN Access Setup" in setup and "GOBBONET -- LAN ACCESS SETUP" in setup
+          and not re.search(r"(?i)gemma\s*4\s*--", setup))
+    check("no Gemma4-* rule is added or modified any more",
+          not re.search(r'firewall (?:add|set) rule name="Gemma4', setup),
+          re.findall(r'firewall (?:add|set) rule name="Gemma4[^"]*"', setup))
+    for old, new_ok in (("Gemma4-Web", 'show rule name="GobboNet-Web"'), ("Gemma4-mDNS", "if defined GN_MDNS_OK")):
+        delete = setup.find(f'delete rule name="{old}"')
+        guard = setup.rfind(new_ok, 0, delete)
+        check(f"  {old} is replaced: deleted only after its replacement is confirmed",
+              delete != -1 and guard != -1 and setup.count(f'delete rule name="{old}"') == 1)
+        check(f"  {old} is still removed by teardown-lan.bat (upgraded installs)",
+              f'drop_rule "{old}"' in teardown)
+    mdns = setup[setup.find('set "GN_MDNS_OK="'):setup.find("if defined GN_MDNS_OK")]
+    check("  mDNS success is judged by netsh exit codes, not its translated output",
+          "findstr" not in mdns and mdns.count('set "GN_MDNS_OK=1"') == 3,
+          "netsh prints Enabled/Aktiviert/Activé; matching any of them fails on the others")
+    doctor = read(os.path.join(ROOT, "cmd", "gobbonet", "doctor.go"))
+    check("  gobbonet doctor knows both names",
+          'portRuleName    = "GobboNet-Web"' in doctor and 'portRuleOldName = "Gemma4-Web"' in doctor)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED")

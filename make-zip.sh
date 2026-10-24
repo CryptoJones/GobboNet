@@ -194,12 +194,12 @@ for rel in \
     gobbonet.exe launch.bat fileserver.ps1 setup-lan.bat teardown-lan.bat \
     "Repair Windows shortcuts.bat" repair-windows-shortcuts.ps1 PATCH-README.txt \
     stop-gobbonet.bat hardware-probe.ps1 hw-recommend.ps1 identify-model.ps1 \
-    chat.html default-characters.json gobbonet.ico VERSION \
+    chat.html default-characters.json gobbonet.ico manifest.webmanifest VERSION \
     README.md TROUBLESHOOTING.md SECURITY.md LINUX-START-HERE.md LICENSE AGENTS.md \
-    CONTRIBUTORS.md \
+    CONTRIBUTORS.md CONTRIBUTING.md \
     go.mod go.sum build-release.sh make-zip.sh stage-web.sh verify-payload.sh \
     payload.manifest engine.sha256 .gitignore \
-    js css docs tests cmd internal installer installer-win installer-linux \
+    js css icons docs tests cmd internal installer installer-win installer-linux \
     installer-fedora linux-amd64
 do
     copy_in "$rel"
@@ -226,15 +226,16 @@ chmod 0755 "$TOP/gobbonet"
 # Pruned by NAME anywhere under the staged tree rather than by a list of known
 # paths, so a builder that invents a new scratch directory does not quietly put
 # it back. rpmbuild/ is installer-fedora's: the payload tarball, the unpacked
-# build tree and the built package, the engine in each of them.
+# build tree and the built package, the engine in each of them. stage-appimage/
+# is build-appimage.sh's AppDir, the engine again.
 rm -rf "$TOP/dist" "$TOP/linux-amd64/web" "$TOP/web"
-for scratch in dist stage vendor payload rpmbuild; do
+for scratch in dist stage stage-appimage vendor payload rpmbuild; do
     find "$TOP" -mindepth 2 -type d -name "$scratch" -prune -exec rm -rf {} + 2>/dev/null || true
 done
 find "$TOP" -name 'GobboNetSetup-*.exe' -delete 2>/dev/null || true
 # Parenthesised: without the brackets find reads `-name '*.deb' -o
 # \( -name '*.rpm' -delete \)`, and every .deb stayed in the archive.
-find "$TOP" \( -name '*.deb' -o -name '*.rpm' \) -delete 2>/dev/null || true
+find "$TOP" \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -delete 2>/dev/null || true
 
 if [ "$WITH_ENGINE" -eq 0 ]; then
     rm -rf "$TOP/linux-amd64/llama-cpp" "$TOP/linux-amd64/llama-cpp-cpu"

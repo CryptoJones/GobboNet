@@ -5,15 +5,45 @@
 
 This is the script that built `GobboNetSetup-1_7_0.exe` and everything before
 it. It installs the batch/PowerShell path — `launch.bat` and `fileserver.ps1` —
-and needs no Go binary.
+and, since 1.7.6, the Go binary.
 
 ```sh
-# stage the payload next to this directory as ../staging, then:
-makensis gobbonet.nsi
+./make-zip.sh                                  # dist/GobboNet-<ver>.zip
+unzip -q dist/GobboNet-*.zip -d /tmp/gn
+installer-win/stage-payload.sh /tmp/gn/GobboNet   # -> ../staging, from the ZIP
+cd installer-win && makensis gobbonet.nsi      # NSIS 3.12, large strings
 ```
 
 Only `!define APPVER` changes between releases. `OutFile` and
 `VIProductVersion` track it.
+
+## Building it: which NSIS, and how to check the result
+
+**NSIS 3.12, the large-strings build** (`NSIS_MAX_STRLEN=8192`). That is what
+compiled the 1.7.7 installer: its stub is NSIS 3.12's, and its compiled script
+has 8192-character string slots. A standard build (1024) changes how long a
+string the installer can hold. A different version changes the installer
+engine. Neither is a change this script asked for. Check with `makensis
+-HDRINFO`: "Size of each section is 32792 bytes" is the large-strings build.
+
+**Stage from the ZIP.** `stage-payload.sh` reads its file list from this
+script's `File "${APPSRC}\..."` lines, so the two cannot drift, and staging
+from the unpacked ZIP puts the same bytes in the installer as in the ZIP
+beside it. `tests/test-windows-staging.py` holds it to that.
+
+**Compare with the last release.** 7-Zip lists and extracts an NSIS
+installer, so the payloads can be compared file by file. The compiled script
+can be compared too: decompress the header and list each instruction with its
+strings. Done for 1.7.8 against the official 1.7.7, as recorded in
+`docs/changelog/CHANGELOG-1.7.8-windows-installer-build.md`, the instruction
+lists of the installer and the uninstaller differ by exactly this script's
+diff since `v1.7.7`, and nothing else.
+
+On Linux, makensis and the Windows stubs build from the NSIS source with SCons
+and an llvm-mingw cross compiler. Three small build-only patches are needed;
+lld has no linker scripts or `--exclude-libs`, and clang needs C linkage on
+NSIS's own `memset`/`memcpy` and has no `.func`. The changelog has them, and
+how the result was checked against the official 1.7.7.
 
 ## 1.7.6: the same installer, plus gobbonet.exe
 
@@ -40,7 +70,10 @@ Staging for a build: copy into `../staging` the files the script lists
 - `gobbonet.exe` from `make-zip.sh`;
 - `PURGE.md` from `docs/PURGE.md`. It moved there in 1.7.2, but the install
   keeps it at the root, where `TROUBLESHOOTING.md` points;
-- `models.ini` from `installer/models.ini` (1.7.7).
+- `models.ini` from `installer/models.ini` (1.7.7);
+- `engine.sha256` from the repo root (1.7.8). `launch.bat` reads its
+  llama.cpp pin from it, and `gobbonet engine install` needs it beside the
+  program.
 
 ## 1.7.7: the same pages again
 
@@ -55,9 +88,10 @@ pages are the ones this script has always had:
 6. One Thing Before You Start, the Windows Defender notice
 7. Finish: [x] Launch GobboNet, [ ] Set up phone access over the LAN
 
-*Launch GobboNet* opens `launch.bat` in its console window. That window
-fetches llama.cpp, detects the hardware and offers the model list, then hands
-over to `gobbonet.exe` and opens the browser.
+*Launch GobboNet* runs `gobbonet.exe launch` (below). On a new install there
+are no settings yet, so it opens `launch.bat` in its console window. That
+window fetches llama.cpp, detects the hardware and offers the model list, then
+hands over to `gobbonet.exe` and opens the browser.
 
 One addition: **`models.ini` is installed.**
 
@@ -68,6 +102,31 @@ One addition: **`models.ini` is installed.**
 
 Without it, an installed copy had no list offline, and the type buttons
 matched nothing. See `docs/changelog/CHANGELOG-1.7.7-windows-installer.md`.
+
+## 1.7.8: the 1.7.6 hotfix's shortcuts
+
+The 1.7.6 hotfix (patch 3) made the main shortcuts start GobboNet directly,
+and shipped that in its own installer build; 1.7.7 carried the application
+side over first. This script now matches it:
+
+- **GobboNet** (Start menu and desktop) and the new **Launch GobboNet** run
+  `gobbonet.exe launch`. It serves the saved settings straight away and opens
+  the browser. With no settings yet it runs `launch.bat`'s first-run setup.
+  So does a first run that stopped before its end and left no engine set:
+  `launch.bat` keeps a `.gobbonet-setup-pending` mark until it finishes.
+- **Setup or add a model** runs `launch.bat` itself: the engine download,
+  hardware check and model menu.
+- The finish page's *Launch GobboNet* runs the same command as the shortcuts,
+  in the same folder.
+- Every link is recreated on each install, so updating over an older version
+  re-points links that ran `launch.bat`. The uninstaller removes the two new
+  links, without which it could not remove the Start menu folder.
+- **GobboNet LAN Setup** is unchanged, still flagged *Run as administrator*.
+
+ZIP installs get the same links from `Repair Windows shortcuts.bat`. See
+`docs/changelog/CHANGELOG-1.7.6-windows-launch.md` and
+`docs/changelog/CHANGELOG-1.7.8-hotfix-installers.md`.
+`tests/test-windows-launch.py` holds both scripts to it.
 
 ## Not to be confused with `installer/`
 

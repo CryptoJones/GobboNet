@@ -154,6 +154,45 @@ itself, so it can notice the failure and fall back to a zenity/kdialog/
 notify-send dialog carrying the URL. Owning that step is what makes the failure
 visible; a script that delegates it cannot detect it.
 
+## The AppImage
+
+```sh
+./build-deb.sh && ./build-appimage.sh   # dist/GobboNet-<deb version>-x86_64.AppImage
+```
+
+Made from the `.deb`, so it carries the same files: `build-appimage.sh` unpacks
+the package into an AppDir, adds `AppRun`, a copy of the menu entry with
+`Exec=gobbonet` and the icon, and appends a zstd squashfs of it to the AppImage
+type 2 runtime. Nothing else is added. The one change to the package's files
+is `usr/bin/gobbonet`: in the `.deb` it is an absolute link to
+`/usr/lib/gobbonet`, which inside an image would point at the host, so it is
+made relative.
+
+`AppRun` runs `usr/lib/gobbonet/gobbonet-launch`, the same launcher the package
+installs. Nothing in it changed for the AppImage:
+
+- it finds its own folder with `readlink -f`;
+- it writes only to `~/.config/gobbonet` and `~/.local/share/gobbonet`;
+- the engine path recorded at setup names that run's temporary mount, and
+  `gobbonet serve` already replaces a `server_exe` that no longer exists with
+  the engine beside the binary, so each later run picks up its own.
+
+The runtime is pinned in the script to a dated release by SHA-256. The hash
+was checked against the release's detached signature. The build fails on a
+mismatch, and a different release has to be passed with its hash. No
+appimagetool is used, so the runtime is the only download. The build also
+checks the runtime's `.upd_info` section is empty, so the AppImage never looks
+for updates on its own.
+
+On the user's machine it needs x86_64, glibc 2.34 or newer (the engine's
+floor, as for the `.deb`), bash, `fusermount`, and python3 for the first-run
+setup. The engine's other libraries (libstdc++, libgomp, OpenSSL 3) come from
+the host as they do for the package; bundling libstdc++ would fight the host's
+Vulkan driver, which loads the host's own. When python3 is missing, the
+launcher says so in a dialog instead of failing the first run.
+
+The approach is Deven-Eve's from issue #53.
+
 ## Deferred
 
 arm64 packages, autostart-at-login, and the hardware probe. Linux v1

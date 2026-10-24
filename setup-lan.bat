@@ -43,12 +43,12 @@ setlocal EnableDelayedExpansion
 set "SYS32=%SystemRoot%\System32"
 if not exist "%SYS32%\cmd.exe" set "SYS32=%windir%\System32"
 if exist "%SYS32%\cmd.exe" set "PATH=%SYS32%;%SYS32%\WindowsPowerShell\v1.0;%PATH%"
-title Gemma 4 -- LAN Access Setup (one-time)
+title GobboNet -- LAN Access Setup (one-time)
 color 0A
 
 echo.
 echo  ====================================================
-echo   GEMMA 4 -- LAN ACCESS SETUP
+echo   GOBBONET -- LAN ACCESS SETUP
 echo.
 echo   This script configures Windows to let your phone
 echo   connect to the chat over your local network.
@@ -196,14 +196,28 @@ if not errorlevel 1 (
 :: one -- got no rule at all and no message saying so. The scope is still
 :: LocalSubnet on every profile, so this widens nothing: a domain network the
 :: user is actually on is as much "their LAN" as a home one.
-netsh advfirewall firewall show rule name="Gemma4-Web" >nul 2>&1
+netsh advfirewall firewall show rule name="GobboNet-Web" >nul 2>&1
 if errorlevel 1 (
-    netsh advfirewall firewall add rule name="Gemma4-Web" dir=in action=allow protocol=TCP localport=!WEB_PORT! profile=domain,private,public remoteip=LocalSubnet >nul
-    echo  [OK] Firewall rule added: Gemma4-Web (port !WEB_PORT!, file server, local subnet only)
+    netsh advfirewall firewall add rule name="GobboNet-Web" dir=in action=allow protocol=TCP localport=!WEB_PORT! profile=domain,private,public remoteip=LocalSubnet >nul
+    echo  [OK] Firewall rule added: GobboNet-Web (port !WEB_PORT!, file server, local subnet only)
 ) else (
     rem Repair any pre-existing (possibly wide-open) rule from an older run.
-    netsh advfirewall firewall set rule name="Gemma4-Web" new dir=in action=allow protocol=TCP localport=!WEB_PORT! profile=domain,private,public remoteip=LocalSubnet >nul
-    echo  [OK] Firewall rule updated: Gemma4-Web (re-scoped to local subnet only)
+    netsh advfirewall firewall set rule name="GobboNet-Web" new dir=in action=allow protocol=TCP localport=!WEB_PORT! profile=domain,private,public remoteip=LocalSubnet >nul
+    echo  [OK] Firewall rule updated: GobboNet-Web (re-scoped to local subnet only)
+)
+
+:: Until 1.7.8 the rule above was named Gemma4-Web, after the model the project
+:: started with (issue #63). It is replaced, not kept beside the new one: two
+:: allow rules for one port is twice the surface and a confusing firewall list.
+:: Deleted only once GobboNet-Web is confirmed to exist, so a failed add never
+:: leaves the phone with no rule at all. gobbonet doctor recognises either name.
+netsh advfirewall firewall show rule name="GobboNet-Web" >nul 2>&1
+if not errorlevel 1 (
+    netsh advfirewall firewall show rule name="Gemma4-Web" >nul 2>&1
+    if not errorlevel 1 (
+        netsh advfirewall firewall delete rule name="Gemma4-Web" >nul 2>&1
+        echo  [OK] Removed the old firewall rule: Gemma4-Web ^(replaced by GobboNet-Web^)
+    )
 )
 
 :: ---------------------------------------------------------------
@@ -282,21 +296,39 @@ echo.
 :: ---------------------------------------------------------------
 echo  [..] Enabling mDNS (.local hostname) on Private + Public profiles...
 
+set "GN_MDNS_OK="
 netsh advfirewall firewall set rule name="mDNS (UDP-In)" new enable=yes profile=domain,private,public >nul 2>&1
 if errorlevel 1 (
     rem Older builds may not have the canonical rule name. Add a fresh
     rem one as a fallback so the .local hostname still works -- scoped
     rem to private + local subnet to match the service rules.
-    netsh advfirewall firewall show rule name="Gemma4-mDNS" >nul 2>&1
+    netsh advfirewall firewall show rule name="GobboNet-mDNS" >nul 2>&1
     if errorlevel 1 (
-        netsh advfirewall firewall add rule name="Gemma4-mDNS" dir=in action=allow protocol=UDP localport=5353 profile=domain,private,public remoteip=LocalSubnet >nul
-        echo  [OK] Firewall rule added: Gemma4-mDNS (UDP 5353, .local resolution, local subnet only)
+        netsh advfirewall firewall add rule name="GobboNet-mDNS" dir=in action=allow protocol=UDP localport=5353 profile=domain,private,public remoteip=LocalSubnet >nul
+        if not errorlevel 1 set "GN_MDNS_OK=1"
+        echo  [OK] Firewall rule added: GobboNet-mDNS (UDP 5353, .local resolution, local subnet only)
     ) else (
-        echo  [OK] Firewall rule already exists: Gemma4-mDNS
+        set "GN_MDNS_OK=1"
+        echo  [OK] Firewall rule already exists: GobboNet-mDNS
     )
 ) else (
+    set "GN_MDNS_OK=1"
     echo  [OK] Built-in 'mDNS (UDP-In)' rule enabled on all profiles.
 )
+
+:: The fallback rule was named Gemma4-mDNS until 1.7.8 (issue #63). Once mDNS
+:: is confirmed allowed -- by the built-in rule or by GobboNet-mDNS, judged by
+:: netsh's exit codes, never by its translated output -- the old one is
+:: redundant and is deleted. If neither was confirmed it is left alone, so a
+:: failed enable or add never takes .local resolution away.
+if defined GN_MDNS_OK (
+    netsh advfirewall firewall show rule name="Gemma4-mDNS" >nul 2>&1
+    if not errorlevel 1 (
+        netsh advfirewall firewall delete rule name="Gemma4-mDNS" >nul 2>&1
+        echo  [OK] Removed the old firewall rule: Gemma4-mDNS ^(replaced^)
+    )
+)
+set "GN_MDNS_OK="
 
 echo.
 

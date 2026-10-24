@@ -16,6 +16,7 @@ func LoginPage(failed bool) string {
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gobbonet -- sign in</title>
+` + HomeScreenTags + `
 <style>
   body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
          background:#0a0e0a; color:#7fd97f; font-family:ui-monospace,Menlo,Consolas,monospace; }
@@ -32,6 +33,7 @@ func LoginPage(failed bool) string {
   .err { color:#ff8a8a; font-size:12px; margin:14px 0 0; }
   .note { margin:18px 0 0; padding-top:14px; border-top:1px solid #1f3a1f;
           font-size:11px; line-height:1.5; color:#5a7d5a; }
+  .note + .note { margin-top:8px; padding-top:0; border-top:0; }
 </style></head>
 <body><form class="box" method="POST" action="/login">
   <h1>gobbonet</h1>
@@ -43,9 +45,25 @@ func LoginPage(failed bool) string {
   <p class="note">This connection is over your local network in plain text
   (not encrypted). It's fine for a home network you trust. Avoid using it on
   shared or public Wi-Fi, and don't reuse a password that matters elsewhere.</p>
+  <p class="note">A sign-in lasts until GobboNet restarts, 12 hours at most by
+  default, and only for this device and browser. A phone that changes network
+  address, or a browser that updates, is asked to sign in again.</p>
 </form></body></html>
 `
 }
+
+// HomeScreenTags are chat.html's home-screen tags (issue #63), with absolute
+// paths: this page is served at /login and at any deep link a signed-out
+// browser opens. A phone usually meets GobboNet here first, so "Add to Home
+// Screen" from the sign-in page has to find the same name and icon. The files
+// they name are served before sign-in (server.go, publicAssets).
+const HomeScreenTags = `<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/gobbonet-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="GobboNet">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#020205">`
 
 // TooManyAttemptsPage is shown when the login rate limiter trips on a browser
 // navigation, so a locked-out user gets an explanation rather than raw JSON.

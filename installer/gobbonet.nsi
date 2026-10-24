@@ -873,18 +873,23 @@ arrived instead of the model. Nothing was installed to the models folder."
   ; whose only job was to locate the folder and ShellExecute a .bat,
   ; complete with a hardcoded "usually an antivirus block" error path.
   ; gobbonet.exe is a real executable, so the shortcut points at it and
-  ; both shims are gone.
+  ; both shims are gone. It runs as `gobbonet.exe launch` (1.7.6 hotfix,
+  ; patch 3): serve with the saved settings, or run first-run setup when
+  ; there are none. SetOutPath is each link's working folder.
   ;--------------------------------------------------------------
+  SetOutPath "$INSTDIR"
   CreateDirectory "$SMPROGRAMS\GobboNet"
+  CreateShortcut "$SMPROGRAMS\GobboNet\Launch GobboNet.lnk" \
+                 "$INSTDIR\gobbonet.exe" "launch" "$INSTDIR\gobbonet.ico"
   CreateShortcut "$SMPROGRAMS\GobboNet\GobboNet.lnk" \
-                 "$INSTDIR\gobbonet.exe" "" "$INSTDIR\gobbonet.ico"
+                 "$INSTDIR\gobbonet.exe" "launch" "$INSTDIR\gobbonet.ico"
   CreateShortcut "$SMPROGRAMS\GobboNet\GobboNet LAN Setup.lnk" \
                  "$INSTDIR\setup-lan.bat" "" "$INSTDIR\gobbonet.ico"
   CreateShortcut "$SMPROGRAMS\GobboNet\Add another model.lnk" \
                  "$INSTDIR\launch.bat" "" "$INSTDIR\gobbonet.ico"
   CreateShortcut "$SMPROGRAMS\GobboNet\Uninstall GobboNet.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\GobboNet.lnk" \
-                 "$INSTDIR\gobbonet.exe" "" "$INSTDIR\gobbonet.ico"
+                 "$INSTDIR\gobbonet.exe" "launch" "$INSTDIR\gobbonet.ico"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\GobboNet" "InstallDir" "$INSTDIR"
@@ -953,7 +958,8 @@ Function FinishPageLeave
   ${If} $0 == ${BST_CHECKED}
     ; gobbonet.exe starts llama-server itself when server_exe is set,
     ; so this single call is the whole "installed -> running" step.
-    Exec '"$INSTDIR\gobbonet.exe"'
+    SetOutPath "$INSTDIR"
+    Exec '"$INSTDIR\gobbonet.exe" launch'
   ${EndIf}
 
   ${NSD_GetState} $ChkLan $0

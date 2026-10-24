@@ -1,4 +1,4 @@
-GobboNet 1.7.7 - hotfix integration, application files
+GobboNet 1.7.8 - 1.7.6 hotfix integration
 
 Includes all three cumulative 1.7.6 hotfix groups while preserving 1.7.7:
 - CONFIG custom hostnames (DuckDNS/Tailscale), saved and applied immediately.
@@ -17,17 +17,23 @@ Setup/model selection remains available through launch.bat or its shortcut.
 LINUX UPDATE
 Close GobboNet. Extract into the existing application folder; retain your
 configuration, models, data and linux-amd64/llama-cpp engine directory.
-The top-level ./gobbonet remains the 1.7.7 setup/launch entry point.
+The top-level ./gobbonet remains the setup/launch entry point (since 1.7.7).
 This update includes freshly rebuilt Windows x64 and Linux x64 binaries with
-the merged interface embedded. No engine or model downloads are bundled.
+the merged interface embedded. No model is bundled. A full archive also
+carries the Linux engine; an update archive that leaves it out says so in
+NO-ENGINE-IN-THIS-ZIP.txt.
 
 SOURCE AND INSTALLERS
-Full application source and regression tests are included. Installer sources
-are still the original 1.7.7 versions in this application-phase package; do not
-use them to publish installers yet. Installer integration is the next phase.
-No Git commits, tag changes or pushes were made.
+Full application source and regression tests are included. The installer
+sources now carry the hotfix as well: installer-win/gobbonet.nsi makes the
+same GobboNet, Launch GobboNet and Setup or add a model shortcuts as the
+repair script, and removes them on uninstall; installer-linux/build-deb.sh has
+the hotfix's library-size fix. They were checked as source only (no NSIS
+compiler was available): run one Windows install and uninstall before
+publishing an installer. See docs/changelog/CHANGELOG-1.7.8-hotfix-installers.md.
+No tags were changed and nothing was pushed.
 
-VALIDATION
+VALIDATION (application integration, f2a0d4a)
 All 40 JavaScript suites passed, including both hotfix and 1.7.7 checks.
 Go application launch, config, server, state and web UI package tests passed.
 Full Go run: 18 test packages passed; supervisor tests that need /proc/self/exe

@@ -38,8 +38,8 @@ OUT="internal/webui/assets"
 # Files that must exist at the root for the frontend to be complete. A missing
 # one means an upstream merge went wrong; say so rather than shipping a web
 # root with a hole in it.
-REQUIRED_FILES="chat.html default-characters.json gobbonet.ico"
-REQUIRED_DIRS="js css"
+REQUIRED_FILES="chat.html default-characters.json gobbonet.ico manifest.webmanifest"
+REQUIRED_DIRS="js css icons"
 
 for f in $REQUIRED_FILES; do
     [ -f "$f" ] || { echo "ERROR: $f missing from the repo root" >&2; exit 1; }

@@ -31,12 +31,16 @@ const MaxCtxCap = 262144
 // Record is one entry in models-list.json. The JSON names are what chat.html
 // and the swap launcher read, so this serialises straight to the wire.
 type Record struct {
-	File             string `json:"file"`
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Family           string `json:"family"`
-	ThinkingFormat   string `json:"thinkingFormat"`
-	MaxCtx           int    `json:"maxCtx"`
+	File           string `json:"file"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Family         string `json:"family"`
+	ThinkingFormat string `json:"thinkingFormat"`
+	MaxCtx         int    `json:"maxCtx"`
+	// ExpertCount is non-zero for Mixture-of-Experts models. The supervisor
+	// uses it to give automatic GPU placement more headroom (see
+	// supervisor.MoEFitTargetMiB); nothing else reads it.
+	ExpertCount      int    `json:"expertCount,omitempty"`
 	UseJinja         int    `json:"useJinja"`
 	ChatTemplate     string `json:"chatTemplate"`
 	ChatTemplateFile string `json:"chatTemplateFile"`
@@ -151,6 +155,7 @@ type ClassifyInput struct {
 	ChatTemplate  string
 	Architecture  string
 	ContextLength int
+	ExpertCount   int
 	// SidecarFile is a validated .jinja next to the GGUF, filename only.
 	SidecarFile string
 	// SidecarPrefix is prepended to SidecarFile in the emitted record so the
@@ -191,6 +196,10 @@ func Classify(in ClassifyInput) Record {
 	if in.ContextLength > 0 {
 		rec.MaxCtx = min(in.ContextLength, MaxCtxCap)
 	}
+	// Same reasoning as context length: whether a model is MoE says nothing
+	// about which template it wants, so it is settled here, before any branch
+	// below can return early.
+	rec.ExpertCount = in.ExpertCount
 
 	prefix := in.SidecarPrefix
 	if prefix == "" {
@@ -243,9 +252,9 @@ func Classify(in ClassifyInput) Record {
 		// table on shipped builds and would be taken as literal template text.
 		// That was true once and is not now: the name landed between b5300 and
 		// b5600, and it is present in b8941 (the build the old comment named),
-		// b9294 (pinned for Windows) and b10456 (pinned for Linux). The same
-		// comment called the trailing space "harmless for inference"; it is the
-		// bug.
+		// b9294 (Windows' pin until 1.7.8, still on existing installs) and
+		// b10456 (the pin everywhere now). The same comment called the trailing
+		// space "harmless for inference"; it is the bug.
 		//
 		// Prefer the model's own template. It is right by construction for a
 		// fine-tune — Cydonia v4.3 descends from a single parent,

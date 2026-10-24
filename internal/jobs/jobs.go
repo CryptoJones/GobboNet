@@ -63,6 +63,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +123,9 @@ const (
 	// deadlocked, a GPU hang, or a firewall dropping rather than rejecting.
 	// http.Client.Timeout cannot express it, because that clock covers the
 	// streaming body too.
+	//
+	// The default only: the server sets reply_start_timeout_seconds from
+	// config.toml through SetReplyStartTimeout.
 	responseHeaderTimeout = 5 * time.Minute
 
 	// idleTimeout bounds the gap BETWEEN chunks once a stream is flowing, not
@@ -257,6 +261,9 @@ type Manager struct {
 	idle       time.Duration
 	maxRuntime time.Duration
 	capGrace   time.Duration
+	// replyStart is the first-byte bound the client was built with, kept so a
+	// timeout can say how long it waited.
+	replyStart time.Duration
 
 	client *http.Client
 
@@ -308,11 +315,32 @@ func NewManager(llmURL, apiKey string, maxConcurrent, maxAgeHours int) *Manager 
 		// a generous wait for the first byte, and a watchdog on the gap between
 		// chunks (see run). A total cap applies only when the user set one.
 		client:      newJobClient(dialTimeout, responseHeaderTimeout),
+		replyStart:  responseHeaderTimeout,
 		jobs:        make(map[string]*Job),
 		cleanupStop: make(chan struct{}),
 	}
 	go m.cleanupLoop(time.Minute)
 	return m
+}
+
+// SetReplyStartTimeout sets how long a reply may take to start: the wait for
+// llama.cpp's first byte, while it reads the prompt (reply_start_timeout_seconds
+// in config.toml). Call it before serving.
+func (m *Manager) SetReplyStartTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	m.client = newJobClient(dialTimeout, d)
+	m.replyStart = d
+}
+
+// ReplyStartTimeout is the first-byte bound in force.
+func (m *Manager) ReplyStartTimeout() time.Duration { return m.replyStart }
+
+// isReplyStartTimeout reports the transport's first-byte timeout. net/http
+// does not export that error, so its text is the only handle on it.
+func isReplyStartTimeout(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "timeout awaiting response headers")
 }
 
 // Expired results must be reclaimed even if nobody starts another reply.
@@ -579,6 +607,11 @@ func (m *Manager) terminalFailure(ctx context.Context, err error, limit time.Dur
 	case ctx.Err() != nil:
 		// A plain cancellation: the caller asked for it.
 		return StatusCancelled, ""
+
+	case isReplyStartTimeout(err):
+		return StatusError, fmt.Sprintf(
+			"the model did not start replying within %s. Reading a long prompt on a slow or CPU-only machine can take longer: "+
+				"raise reply_start_timeout_seconds in config.toml (CONFIG > Config File) and restart GobboNet.", m.replyStart)
 	}
 	return StatusError, err.Error()
 }

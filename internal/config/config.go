@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -96,6 +97,17 @@ const (
 	// jobs manager now supersedes rather than refusing; see internal/jobs.
 	DefaultJobMaxConcurrent = 1
 	DefaultJobMaxAgeHours   = 48
+
+	// How long a model may take to load before the load counts as failed, and
+	// how long a reply may take to start. Both were constants until 1.7.8:
+	// three minutes is short for a big model off a slow disk or onto the CPU,
+	// and five minutes is short for a long prompt read on the CPU. The bounds
+	// reject nonsense; inside them the number is the user's.
+	DefaultModelLoadTimeoutSeconds  = 180
+	DefaultReplyStartTimeoutSeconds = 300
+	MinTimeoutSeconds               = 10
+	MaxModelLoadTimeoutSeconds      = 7200  // two hours
+	MaxReplyStartTimeoutSeconds     = 86400 // a day
 )
 
 // Config is the parsed config.toml. Field tags are the TOML keys; the launchers
@@ -238,6 +250,16 @@ type Config struct {
 	JobMaxConcurrent int `toml:"job_max_concurrent"`
 	JobMaxAgeHours   int `toml:"job_max_age_hours"`
 
+	// ModelLoadTimeoutSeconds bounds a model load: start-up, a swap, the reload
+	// after idle stand-down, and a restart from CONFIG > Performance. The chat
+	// page reads it from /swap-status and waits a little longer, so the
+	// server's verdict, with its reason, always arrives first.
+	ModelLoadTimeoutSeconds int `toml:"model_load_timeout_seconds"`
+	// ReplyStartTimeoutSeconds bounds the wait for llama.cpp's first byte: the
+	// prompt being read before the reply starts. Once the reply is streaming
+	// it no longer applies; the gap between chunks has its own watchdog.
+	ReplyStartTimeoutSeconds int `toml:"reply_start_timeout_seconds"`
+
 	// --- Not from the file -------------------------------------------------
 	// AutoCtxSize, AutoGPULayers and AutoKVCacheType are what config.toml said
 	// before perf.toml was overlaid — the hardware-detected baseline the
@@ -294,12 +316,14 @@ func Default() Config {
 		// without knowing it is a setting: several gigabytes of VRAM pinned
 		// against an app nobody is using. The cost of being wrong is one model
 		// load on the next message, and it is visible while it happens.
-		IdleStandDownMinutes: DefaultIdleStandDownMinutes,
-		ShowEngineOutput:     true,
-		EngineOutputFull:     false,
-		JobMaxConcurrent:     DefaultJobMaxConcurrent,
-		JobMaxAgeHours:       DefaultJobMaxAgeHours,
-		RequireAuth:          true,
+		IdleStandDownMinutes:     DefaultIdleStandDownMinutes,
+		ShowEngineOutput:         true,
+		EngineOutputFull:         false,
+		JobMaxConcurrent:         DefaultJobMaxConcurrent,
+		JobMaxAgeHours:           DefaultJobMaxAgeHours,
+		ModelLoadTimeoutSeconds:  DefaultModelLoadTimeoutSeconds,
+		ReplyStartTimeoutSeconds: DefaultReplyStartTimeoutSeconds,
+		RequireAuth:              true,
 		// The catalogue fetch is on by default. It is the only thing besides
 		// web search that leaves the machine, it is a plain GET of a static
 		// file with nothing identifying attached, and off by default would
@@ -669,7 +693,33 @@ func (c *Config) normalise() error {
 	if c.ListenPort <= 0 || c.ListenPort > 65535 {
 		return fmt.Errorf("listen_port %d is out of range", c.ListenPort)
 	}
+	// 0 or less reads as "the default", as the job settings above do.
+	for _, t := range []struct {
+		key      string
+		v        *int
+		def, max int
+	}{
+		{"model_load_timeout_seconds", &c.ModelLoadTimeoutSeconds, DefaultModelLoadTimeoutSeconds, MaxModelLoadTimeoutSeconds},
+		{"reply_start_timeout_seconds", &c.ReplyStartTimeoutSeconds, DefaultReplyStartTimeoutSeconds, MaxReplyStartTimeoutSeconds},
+	} {
+		if *t.v <= 0 {
+			*t.v = t.def
+		}
+		if *t.v < MinTimeoutSeconds || *t.v > t.max {
+			return fmt.Errorf("%s must be between %d and %d seconds (default %d), got %d", t.key, MinTimeoutSeconds, t.max, t.def, *t.v)
+		}
+	}
 	return nil
+}
+
+// ModelLoadTimeout is model_load_timeout_seconds as a duration.
+func (c *Config) ModelLoadTimeout() time.Duration {
+	return time.Duration(c.ModelLoadTimeoutSeconds) * time.Second
+}
+
+// ReplyStartTimeout is reply_start_timeout_seconds as a duration.
+func (c *Config) ReplyStartTimeout() time.Duration {
+	return time.Duration(c.ReplyStartTimeoutSeconds) * time.Second
 }
 
 func resolveAgainst(base, path string) string {

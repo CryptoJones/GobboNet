@@ -229,7 +229,11 @@ guard_engine() {
     [ -n "$impl" ] || fail "$label: no libllama*.so beside llama-server — this is not a real engine."
 
     local size
-    size="$(stat -c %s "$impl")"
+    # Follow versioned library symlinks: their link text is not the payload.
+    # b10456 ships libllama.so -> libllama.so.0 -> libllama.so.0.1.0, and find
+    # lists them in directory order, so the first match can be a 13-byte link
+    # (1.7.6 hotfix, packaging).
+    size="$(stat -Lc %s "$impl")"
     [ "$size" -ge 1000000 ] \
         || fail "$label: $(basename "$impl") is only $((size / 1024)) KB.
        The real engine library is megabytes; this is a stub, and a package built

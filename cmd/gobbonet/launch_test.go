@@ -38,6 +38,51 @@ func TestLaunchSetupDecision(t *testing.T) {
 	}
 }
 
+// A first run that stopped after launch.bat's early password write (#63) has
+// a config.toml but no engine. With launch.bat's mark beside it, launch runs
+// setup again; without the mark, or once an engine is set, it serves.
+func TestLaunchSetupUnfinished(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.WriteDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Set(path, "access_secret", "abc:def"); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if launchSetupUnfinished(path, dir) {
+		t.Fatal("no mark: a config without an engine is remote mode, and must be served")
+	}
+	write(setupPendingName)
+	if launchSetupUnfinished(path, dir) {
+		t.Fatal("a mark with no launch.bat beside it must not send launch looking for setup")
+	}
+	write("launch.bat")
+	before, _ := os.ReadFile(path)
+	if !launchSetupUnfinished(path, dir) {
+		t.Fatal("mark + config with no engine: the first run stopped early, setup must run again")
+	}
+	if after, _ := os.ReadFile(path); string(before) != string(after) {
+		t.Fatal("the decision changed the config")
+	}
+	exe := filepath.Join(dir, "llama-server.exe")
+	write("llama-server.exe")
+	if err := config.Set(path, "server_exe", exe); err != nil {
+		t.Fatal(err)
+	}
+	if launchSetupUnfinished(path, dir) {
+		t.Fatal("mark + config with an engine (Setup or add a model, stopped): keep serving")
+	}
+	if launchSetupUnfinished(filepath.Join(dir, "missing.toml"), dir) {
+		t.Fatal("an unreadable config is launchNeedsSetup's business, not this one's")
+	}
+}
+
 func TestLaunchHelp(t *testing.T) {
 	if err := cmdLaunch([]string{"--help"}); err != nil {
 		t.Fatal(err)

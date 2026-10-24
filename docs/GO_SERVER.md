@@ -14,8 +14,8 @@ scripts.
 go build -o gobbonet ./cmd/gobbonet
 ```
 
-Go 1.25+. No cgo, no runtime dependencies — the result is one file you can copy
-next to `web/`.
+Go 1.25+. No cgo, no runtime dependencies — the result is one file, with the
+chat page compiled in (run `./stage-web.sh` first; see below).
 
 ## Releases
 
@@ -24,9 +24,10 @@ next to `web/`.
 ```
 
 Cross-compiles for linux/amd64, linux/arm64, windows/amd64, darwin/arm64 and
-darwin/amd64, and bundles each binary with `web/` into an archive under
-`dist/<version>/` with a `SHA256SUMS`. Static, `-trimpath`, no cgo — a tester
-unpacks it and runs it.
+darwin/amd64, and bundles each binary with the fallback model catalogue
+(`models.ini`) into an archive under `dist/<version>/` with a `SHA256SUMS`.
+There is no `web/` beside it any more: the page is inside the binary.
+Static, `-trimpath`, no cgo — a tester unpacks it and runs it.
 
 Builds are stamped `<VERSION>-go-<short sha>` at link time — the release half
 read from the `VERSION` file at the repo root, the sha from `git rev-parse`, so
@@ -208,6 +209,12 @@ First hit wins:
 4. `~/.config/gobbonet/config.toml`
 5. `./config.toml` — matches the Windows layout, next to `launch.bat`
 
+The chat page can edit the file in use: CONFIG > **Config File**, from a browser
+on the PC GobboNet runs on (never from another device, since the file decides
+which programs GobboNet starts). It hides `access_secret` and `llm_api_key`,
+refuses a save that would stop the next start, and keeps the previous version
+as `config.toml.bak`. Changes apply on the next start.
+
 Config and data are deliberately separate: config in `~/.config/gobbonet`, data
 (state backup, models, logs) in `~/.local/share/gobbonet`. Nothing large is ever
 written next to the config file — `model_dir` defaults to `<data_dir>/models`,
@@ -377,12 +384,20 @@ way `internal/proxy` does it:
 | Stage | Window | Catches |
 |---|---|---|
 | Dial | 10s | upstream not listening |
-| First byte | 5 min | socket accepted, nothing sent — a deadlocked llama.cpp, a GPU hang, a firewall that DROPs |
+| First byte | 5 min, `reply_start_timeout_seconds` | socket accepted, nothing sent — a deadlocked llama.cpp, a GPU hang, a firewall that DROPs |
 | Gap between chunks | 10 min | a stream that stalls mid-generation with no EOF |
 | Total runtime | none, unless the user sets one | only the limit the user chose in CONFIG |
 
 The first-byte window is generous on purpose — a 40K-context prefill can run well
-past thirty seconds before the first token — and the between-chunks watchdog
+past thirty seconds before the first token — and since 1.7.8 it is
+`reply_start_timeout_seconds` in `config.toml` (default 300, 10 to 86400), for a
+long prompt read on the CPU. It applies to the jobs every reply goes through and
+to the `/llm` route lore compression uses; `/search` and `/embed` keep 5 minutes.
+A model load has its own bound, `model_load_timeout_seconds` (default 180, 10 to
+7200): start-up, a swap, the reload after idle stand-down, and a restart from
+CONFIG > Performance. `/swap-status` reports it as `load_timeout_seconds`, and the
+page waits that long plus 30 seconds, so the server's reason always arrives
+before the page gives up. Both messages name the setting. The between-chunks watchdog
 bounds the **gap**, never the total, so a long healthy generation is never cut off.
 
 **There is no fixed total cap** (since 1.7.7). There used to be one — thirty

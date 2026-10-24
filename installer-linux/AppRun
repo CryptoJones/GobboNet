@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# GobboNet, from the AppImage (issue #53).
+#
+# The AppImage runtime mounts the image read-only and runs this. It hands
+# straight over to usr/lib/gobbonet/gobbonet-launch -- the same launcher the
+# .deb installs as its `gobbonet` command -- so the AppImage gets the same first
+# run: the setup page opens in the browser, asks its questions, then the chat
+# opens. Anything after it is passed through untouched, so
+# `./GobboNet.AppImage doctor` works the way `gobbonet doctor` does.
+#
+# Nothing is written inside the image, and nothing could be: config, models and
+# conversations go to ~/.config/gobbonet and ~/.local/share/gobbonet, the
+# places the packages use, so moving between the AppImage and a package keeps
+# all of it.
+#
+# The launcher is run through bash, not as a path, for the reason
+# gobbonet-zip-entry gives: an executable bit is not to be trusted.
+
+here="$(dirname "$(readlink -f "$0")")"
+exec bash "$here/usr/lib/gobbonet/gobbonet-launch" "$@"

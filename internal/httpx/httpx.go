@@ -33,6 +33,9 @@ var mimeTypes = map[string]string{
 	".woff2": "font/woff2",
 	".map":   "application/json; charset=utf-8",
 	".jinja": "text/plain; charset=utf-8",
+	// The home-screen manifest (issue #63). Its registered type; browsers
+	// also accept JSON, but this is what the spec names.
+	".webmanifest": "application/manifest+json",
 }
 
 // MimeType returns the Content-Type for a path.

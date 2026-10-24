@@ -131,6 +131,50 @@ for (const file of WIZARDS) {
   }
 }
 
+/* D. Mixture-of-Experts models on a smaller card (issue #65) */
+const MOE = { index: 6, display: 'Qwen3.6 35B-A3B MoE', min_vram: 24, moe_min_vram: 8, min_ram: 32 };
+const RTX = { known: true, vram_gb: 8, device: 'NVIDIA GeForce RTX 4070 Laptop GPU' };
+for (const file of WIZARDS) {
+  console.log(`\n=== ${file}: MoE on a smaller card ===`);
+  const run = async (gpu, picked = MOE) => {
+    const h = harness(file, { gpu, picked });
+    h.ctx.state.models.push(picked);
+    await h.click();
+    return h;
+  };
+
+  let h = await run({ ...RTX, ram_gb: 32 });
+  ok(h.calls.confirm.length === 0 && h.calls.posts.length === 1,
+     'Qwen3.6 35B-A3B on 8 GB VRAM + 32 GB RAM (PR #66’s machine): asks nothing, downloads', JSON.stringify(h.calls));
+
+  h = await run({ ...RTX, ram_gb: 16 });
+  eq(h.calls.confirm.length, 1, 'the same card with only 16 GB RAM: asks');
+  ok(/Mixture-of-Experts model, so a card with at least 8 GB also runs it well beside 32 GB of system RAM; this machine has 16 GB\./
+       .test(h.calls.confirm[0] || ''), 'and says what would make it fit, with this machine’s RAM', h.calls.confirm[0]);
+
+  h = await run({ ...RTX, vram_gb: 6, ram_gb: 64 });
+  eq(h.calls.confirm.length, 1, 'a 6 GB card, however much RAM: asks');
+
+  h = await run({ ...RTX });
+  eq(h.calls.confirm.length, 1, 'an older setup server that sends no ram_gb: asks, as before');
+  ok(/beside 32 GB of system RAM\.\n\nDownload it anyway\?$/.test(h.calls.confirm[0] || ''),
+     'without claiming a RAM figure it does not have', h.calls.confirm[0]);
+
+  h = await run({ ...RTX, ram_gb: 0 });
+  eq(h.calls.confirm.length, 1, 'RAM unknown (0): confirms nothing, asks');
+
+  h = await run({ ...RTX, ram_gb: 128 }, BIG);
+  eq(h.calls.confirm.length, 1, 'a model with no MoE allowance on 8 GB + 128 GB RAM: still asks');
+  ok(!/Mixture-of-Experts/.test(h.calls.confirm[0] || ''), 'and says nothing about MoE');
+}
+
+/* E. the label the list shows */
+for (const file of WIZARDS) {
+  const src = read(file);
+  ok(/m\.moe_min_vram > 0 && m\.min_ram > 0[\s\S]{0,80}", or " \+ m\.moe_min_vram \+ " GB with " \+ m\.min_ram \+ " GB system RAM"/.test(src),
+     `${file}: the list says "or 8 GB with 32 GB system RAM" for a MoE model`);
+}
+
 /* C. the copies */
 console.log('\n=== the copies ===');
 eq(read('installer-linux/wizard.html'), read('linux-amd64/wizard.html'), 'linux-amd64/wizard.html is still an exact copy of installer-linux/');

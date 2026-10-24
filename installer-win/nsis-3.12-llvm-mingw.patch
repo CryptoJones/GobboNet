@@ -1,0 +1,100 @@
+diff --git a/Contrib/System/Source/Call.S b/Contrib/System/Source/Call.S
+index d9991a33..a6b27669 100644
+--- a/Contrib/System/Source/Call.S
++++ b/Contrib/System/Source/Call.S
+@@ -118,12 +118,16 @@ IF 0
+ 
+ .macro FUNC_DECL name
+ .global \name
++#ifndef __clang__ /* GOBBONET-BUILD: .func is a STABS debug directive clang lacks */
+ .func   \name
++#endif
+ \name:
+ .endm
+ 
+ .macro FUNC_END name
++#ifndef __clang__
+ .endfunc
++#endif
+ .endm
+ 
+ ;# /*
+diff --git a/SCons/Config/gnu b/SCons/Config/gnu
+index 8318367b..33723186 100644
+--- a/SCons/Config/gnu
++++ b/SCons/Config/gnu
+@@ -41,7 +41,7 @@ def entry(x,u):
+ defenv['ENTRY_FLAG'] = entry
+ defenv['MAP_FLAG'] = '-Wl,-Map,${TARGET.base}.map'
+ defenv['EXCEPTION_FLAG'] = ''
+-defenv['NODEFLIBS_FLAG'] = '-nostdlib -Wl,--exclude-libs,msvcrt.a'
++defenv['NODEFLIBS_FLAG'] = '-nostdlib'  # lld (llvm-mingw): no --exclude-libs
+ defenv['C_FLAG'] = '-xc'
+ defenv['CPP_FLAG'] = '-xc++'
+ defenv['ALIGN_FLAG'] = '-Wl,--file-alignment,512'
+@@ -115,6 +115,7 @@ conf.CheckCompileFlag('-fno-tree-loop-distribute-patterns')  # GCC 10: Don't gen
+ conf.CheckLinkFlag('-Wl,--disable-reloc-section') # binutils 2.36, ld will include a .reloc section by default (bug #1283)
+ conf.Finish()
+ stub_env.Append(LINKFLAGS = ['$NODEFLIBS_FLAG'])    # no standard libraries
++stub_env.Append(LINKFLAGS = ['-Wl,--gc-sections'])  # GOBBONET-BUILD: lld keeps all of llvm-mingw's one-object libuuid otherwise
+ 
+ stub_uenv = stub_env.Clone()
+ stub_uenv.Append(CPPDEFINES = ['_UNICODE', 'UNICODE'])
+@@ -153,6 +154,7 @@ if not defenv['DEBUG'] and defenv['STRIP'] and defenv['STRIP_W32']:
+ plugin_env.Append(LINKFLAGS = ['-mwindows'])        # build windows executables
+ plugin_env.Append(LINKFLAGS = ['$ALIGN_FLAG'])      # 512 bytes align
+ plugin_env.Append(LINKFLAGS = ['$MAP_FLAG'])        # generate map file
++plugin_env.Append(LINKFLAGS = ['-Wl,--gc-sections'])  # GOBBONET-BUILD: see stub_env
+ configure_static_libs(plugin_env)                   # remove libgcc*.dll & libstdc++*.dll dependency
+ 
+ plugin_uenv = plugin_env.Clone()
+@@ -232,8 +234,7 @@ if defenv['TARGET_ARCH'] == 'amd64':
+ 	petype = 'pei-x86-64'
+ stub_env.Append(LINKFLAGS = ['-B', petype]) # --oformat petype also works in GCC 4.5.2
+ stub_uenv.Append(LINKFLAGS = ['-B', petype])
+-stub_env.Append(LINKFLAGS = ['-T', File('linker_script').rfile()])
+-stub_uenv.Append(LINKFLAGS = ['-T', File('linker_script').rfile()])
++# lld has no linker scripts; section order is checked after the build
+ 
+ 
+ #
+diff --git a/SCons/Config/memcpy.c b/SCons/Config/memcpy.c
+index 8a928c13..bc077313 100644
+--- a/SCons/Config/memcpy.c
++++ b/SCons/Config/memcpy.c
+@@ -1,6 +1,13 @@
+ #include <stdlib.h> // for size_t
++/* GOBBONET-BUILD: llvm-mingw */
++#ifdef __cplusplus
++extern "C"
++#endif
+ void *memcpy(void *out, const void *in, size_t len)
+ {
++#if defined(__clang__)
++  volatile
++#endif
+   char *c_out=(char*)out;
+   char *c_in=(char *)in;
+   while (len-- > 0)
+diff --git a/SCons/Config/memset.c b/SCons/Config/memset.c
+index f80590d4..c63b615f 100644
+--- a/SCons/Config/memset.c
++++ b/SCons/Config/memset.c
+@@ -1,4 +1,8 @@
+ #include <stdlib.h> // for size_t
++/* GOBBONET-BUILD: llvm-mingw */
++#ifdef __cplusplus
++extern "C"
++#endif
+ 
+ void *memset(void *mem, int c, size_t len)
+ {
+@@ -8,7 +12,7 @@ void *memset(void *mem, int c, size_t len)
+   ** #pragma optimize("", off) + #pragma optimize("ty", on) can also
+   ** be used but it generates a lot more code.
+   */
+-#if defined(_MSC_VER) && _MSC_VER > 1200 && _MSC_FULL_VER <= 140040310
++#if (defined(_MSC_VER) && _MSC_VER > 1200 && _MSC_FULL_VER <= 140040310) || defined(__clang__)
+   volatile 
+ #endif
+   char *p=(char*)mem;

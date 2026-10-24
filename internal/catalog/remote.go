@@ -46,12 +46,16 @@ type wireCatalog struct {
 // `"sha256": null` and `"chat_template": null` today, and null must read as
 // "not provided" rather than failing the whole document.
 type wireEntry struct {
-	Index        int      `json:"index"`
-	Display      string   `json:"display"`
-	Repo         string   `json:"repo"`
-	File         string   `json:"file"`
-	SizeGB       float64  `json:"size_gb"`
-	MinVRAMGB    int      `json:"min_vram_gb"`
+	Index     int     `json:"index"`
+	Display   string  `json:"display"`
+	Repo      string  `json:"repo"`
+	File      string  `json:"file"`
+	SizeGB    float64 `json:"size_gb"`
+	MinVRAMGB int     `json:"min_vram_gb"`
+	// The MoE allowance, as in models.ini (issue #65). Optional: the live
+	// catalogue does not publish them yet, and absent means "dense".
+	MoEMinVRAMGB int      `json:"moe_min_vram_gb"`
+	MinRAMGB     int      `json:"min_ram_gb"`
 	Ctx          int      `json:"ctx"`
 	KV           string   `json:"kv"`
 	SHA256       *string  `json:"sha256"`
@@ -111,17 +115,20 @@ func ParseRemote(body []byte, clientVersion string) (*Catalog, error) {
 		seen[m.Index] = true
 
 		e := Entry{
-			Index:    m.Index,
-			Display:  m.Display,
-			Repo:     m.Repo,
-			File:     m.File,
-			SizeGB:   m.SizeGB,
-			MinVRAM:  m.MinVRAMGB,
-			Ctx:      m.Ctx,
-			KV:       m.KV,
-			UseJinja: m.UseJinja,
-			Tags:     m.Tags,
-			Notes:    m.Notes,
+			Index:   m.Index,
+			Display: m.Display,
+			Repo:    m.Repo,
+			File:    m.File,
+			SizeGB:  m.SizeGB,
+			MinVRAM: m.MinVRAMGB,
+			Ctx:     m.Ctx,
+
+			MoEMinVRAM: m.MoEMinVRAMGB,
+			MinRAM:     m.MinRAMGB,
+			KV:         m.KV,
+			UseJinja:   m.UseJinja,
+			Tags:       m.Tags,
+			Notes:      m.Notes,
 		}
 		if m.SHA256 != nil {
 			// Normalised and length-checked here so a malformed hash is dropped

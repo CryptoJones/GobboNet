@@ -22,7 +22,7 @@ This guide assumes you've never set up anything like this before. Take it one st
 
 ## What you're actually setting up
 
-- There's a small **launcher** (`launch.exe`) that starts everything for you.
+- There's a **launcher** (`launch.bat`, behind the GobboNet shortcut) that starts everything for you.
 - There's the **AI engine** — the program that does the actual thinking. It's about 300 MB and downloads once.
 - There's the **AI model** — this is the "brain." It's a big file (usually 4–16 GB). You pick one from a menu and it downloads once.
 - There's a second, much smaller **retrieval model** (~146 MB) that also downloads once. It's what lets a character pull the relevant parts of its own notes and lore into a conversation instead of re-reading all of it every turn.
@@ -34,7 +34,7 @@ You download the engine and a model **one time**. After that, everything runs of
 
 ## What you need before you start
 
-- **A Windows 10 or Windows 11 PC.** (This doesn't work on Mac or Linux as written.)
+- **A Windows 10 or Windows 11 PC, or a 64-bit Linux PC.** This guide walks through Windows. On Linux there's a `.deb`, an `.rpm`, an AppImage and the ZIP; follow [LINUX-START-HERE.md](LINUX-START-HERE.md) instead. Mac isn't supported.
 - **A graphics card (GPU) helps a lot.** The AI runs *much* faster on a graphics card. It will still run without a good one, just slowly. The setup checks your hardware and recommends a model that fits.
 - **Free hard-drive space.** At least 10–20 GB free, ideally more. The AI models are large.
 - **An internet connection for the first setup only.** After the one-time downloads, you can unplug from the internet and it still works.
@@ -45,9 +45,9 @@ You do **not** need to be technical, create any account, enter a credit card, or
 
 ## Step 1 — Install it
 
-Go to the [Releases page](https://github.com/ElodineOfficial/gobbonet/releases) and download **`GobboNetSetup.exe`**. It's small (660 KB), it installs just for you, and it doesn't need admin rights.
+Go to the [Releases page](https://github.com/ElodineOfficial/gobbonet/releases) and download **`GobboNetSetup.exe`**. It installs just for you, and it doesn't need admin rights.
 
-Double-click it. Windows will probably say **"Windows protected your PC"** — click **More info**, then **Run anyway**. That warning appears because the installer isn't signed with a paid certificate, not because anything is wrong with it.
+Double-click it. Windows will probably say **"Windows protected your PC"** — click **More info**, then **Run anyway**. That warning appears because the installer isn't signed with a paid certificate, not because anything is wrong with it. Firefox may also hold the download back as one that isn't commonly downloaded; allow it from the downloads list. Same reason.
 
 When it finishes you'll have GobboNet in your Start Menu and on your desktop, along with an uninstaller that asks before it goes anywhere near your downloaded models.
 
@@ -78,6 +78,8 @@ Gobbonet\
 ├── chat.html             <- source of the chat screen (built into the .exe)
 ├── default-characters.json
 ├── gobbonet.ico
+├── manifest.webmanifest  <- the phone home-screen icon's name and colours (built in too)
+├── icons\   (3 files)    <- the home-screen icons, source as above
 ├── css\     (17 files)   <- source, as above
 ├── js\      (24 files)   <- source, as above
 ├── linux-amd64\          <- the Linux build; Windows users can ignore it
@@ -87,9 +89,9 @@ Gobbonet\
 
 A `models` folder and a few small bookkeeping files (`models-list.json`, `active-model.json`) get created for you on the first run — that's normal, you don't need to make them yourself.
 
-Going this route, run **`launch.bat`** wherever the rest of this guide says
-`launch.exe`, and `setup-lan.bat` where it says **LAN Setup**. Everything else
-works the same.
+Going this route, run **`launch.bat`** wherever the rest of this guide says the
+**GobboNet** shortcut, and right-click `setup-lan.bat` → **Run as
+administrator** where it says **LAN Setup**. Everything else works the same.
 
 `launch.bat` is the black-and-green window that walks you through everything —
 setting a password, downloading the AI engine, checking your hardware, picking a
@@ -104,7 +106,7 @@ One cosmetic difference: the installer bundles a font that the source ZIP does n
 
 ## Step 2 — Run the launcher
 
-Double-click the **GobboNet** shortcut on your desktop, or **`launch.exe`** in the install folder.
+Double-click the **GobboNet** shortcut on your desktop, or **`launch.bat`** in the install folder.
 
 A black window with green text will open. This is normal — it's the launcher talking to you. **Read what it says**, because it asks you a few simple questions the first time.
 
@@ -176,7 +178,7 @@ Two things reach out, and both are yours to turn on: web search, if you set up a
 
 You can chat from your phone or tablet **as long as it's on the same Wi-Fi** as your PC. This is optional — skip it if you only want to use it on the PC.
 
-1. Open **LAN Setup** from your Start Menu (or `launchLAN.exe` in the install folder). It tells you exactly what it's about to change before Windows asks for admin permission — say yes to the prompt. This opens the door for your phone to connect. You only ever do this **once**.
+1. Open **GobboNet LAN Setup** from your Start Menu (or right-click `setup-lan.bat` in the install folder → **Run as administrator**). It tells you exactly what it's about to change before Windows asks for admin permission — say yes to the prompt. This opens the door for your phone to connect. You only ever do this **once**.
 2. Look at the launcher window. Under **phone / LAN** it prints the addresses to try, with the name of the network adapter each one belongs to:
 
    ```
@@ -184,7 +186,9 @@ You can chat from your phone or tablet **as long as it's on the same Wi-Fi** as 
                   http://10.0.0.57:9066/       (Wi-Fi)
    ```
 
-3. On your phone's browser, type the top one. Enter the password you chose. Done.
+3. On your phone's browser, type the top one — all of it, `http://` included. Without it, Safari tries `https://` and fails. Enter the password you chose. Done.
+
+**Put it on your home screen.** Once it loads, add it like an app: on iPhone or iPad, Safari's **Share** button → **Add to Home Screen**; on Android, Chrome's **⋮** menu → **Add to Home screen**. The icon keeps the whole address, `http://` included, so you never type it again. On iPhone and iPad it opens full screen, without Safari's bars, and keeps its own sign-in apart from Safari's: sign in once more the first time, and your chats come over from the PC by themselves. On Android it opens in Chrome as usual.
 
 > **If there's more than one address, that's normal** — it means your PC has more than one network adapter, and only your phone knows which one it shares. Work down the list. The line whose adapter name matches the Wi-Fi your phone is on is the one that will work. Anything marked *virtual adapter* or *VPN or tunnel* is listed for completeness and is almost never the answer.
 
@@ -203,7 +207,7 @@ Gobbonet is more than a plain chatbox. Here are the parts you'll actually use, i
 - **Web search (optional).** There's a search button that lets the AI look things up online. It needs a free key — see below. Off unless you turn it on.
 - **Adding models (optional).** Config → **Add a Model** shows a catalogue you can download from without leaving GobboNet or working out HuggingFace's interface. GobboNet downloads the file, checks it, and puts it where it belongs. The list itself is a small public file fetched from goblincorps.com so it can be kept current — a plain download with nothing about you or your machine attached, cached for a day, and switchable off with `model_catalog_remote = false`. If it can't be reached, the list that shipped with GobboNet is used instead and downloading still works.
 - **Switching models.** If you've downloaded more than one model, you can switch between them from a dropdown at the top — no need to restart.
-- **Using a server you already run (optional).** If you already have llama.cpp or Ollama running, GobboNet can talk to that instead of starting its own engine. Open `config.toml`, set `server_exe = ""` and point `llm_url` at your server:
+- **Using a server you already run (optional).** If you already have llama.cpp or Ollama running, GobboNet can talk to that instead of starting its own engine. Open `config.toml` (on the PC running GobboNet, Config → **Config File** opens it for you), set `server_exe = ""` and point `llm_url` at your server:
 
   ```toml
   server_exe = ""
@@ -348,10 +352,11 @@ The LAN access for mobile access has changed on the variable address. There is a
 ## Known bugs
 We like to be upfront about what's broken. We'll update this section as we squash them.
 
-**Logit bias is broken**: (this is what powers "banned words"). 
-The banned-words feature — the one that's supposed to discourage specific words from showing up — relies on logit bias under the hood, and logit bias isn't working right now. Banning a word won't reliably keep it out of replies. For the moment, treat the feature as non-functional rather than just hit-or-miss. (You'll see this flagged in the feature list too.)
+Nothing is listed right now. If you find something, open an issue on GitHub: the bug template asks for what we need to track it down.
 
 ### Recently fixed
+
+**Banned words not keeping words out** — *fixed in 1.7.8.* The list banned every piece of every word and phrase it was given, so a phrase took its everyday words with it ("her", "down"), a word that splits into pieces banned fragments other words share, and the slider's far end was only a strong nudge. It now bans a word at its own token, stops a phrase at its rarest word, never bans a common word or a fragment, and at -100 bans outright. **CHECK** under the list shows exactly what gets banned with the model you have loaded. It still works on the model's tokens, not on spelling, so single words work best.
 
 **Mistral Small models talking nonsense** — *fixed in 1.7.2.* Cydonia, Magidonia and other Mistral Small 24B descendants would ignore their character entirely and answer in French, or start writing academic papers. The cause was one character: GobboNet was framing the conversation with a space where those models expect none, which was enough to stop them recognising that a conversation was happening at all. They now use their own built-in formatting. This was previously listed here as "Tekken tokenizer models misbehave".
 
@@ -363,7 +368,7 @@ Same honesty policy as the bug list: here's what's actually queued, and roughly 
 
 Between 1.5.8 and 1.6
 - PDF handling — attach a PDF and have the AI actually read it, rather than being limited to plain text.
-- Mac / Linux / Android port — GobboNet is Windows-only today. This is the work that changes that.
+- Mac / Linux / Android port — Linux shipped in 1.7: a `.deb`, an `.rpm`, the ZIP, and from 1.7.8 an AppImage. Mac and Android are what's left.
 - Model list moves to a GoblinCorps web call — the download menu currently ships with a fixed list baked into the files. Pulling it from our site instead means new and better models can show up in your menu without you reinstalling anything. We’ll be using an ‘add model’ button in the config menu that’ll let you download more models directly from huggingface.
 
 Between 1.6 and v2.0
@@ -389,7 +394,7 @@ Between 1.6 and v2.0
 | Start the chat | Open **GobboNet** from the Start Menu or desktop |
 | Use it on my phone | Run **LAN Setup** from the Start Menu once, then use the address shown |
 | Change my password | Delete `.gobbonet-secret` and relaunch (or `launch.bat reset-password`) |
-| Add another AI model | Put a `.gguf` file in the `models` folder, or use the launcher's menu |
+| Add another AI model | Config → **Add a Model**, put a `.gguf` file in the `models` folder, or open **Setup or add a model** from the Start Menu |
 | Turn on web search | Paste a free Ollama key into Settings |
 | Shut it down | Close the green launcher window |
 
@@ -425,6 +430,7 @@ Everything GobboNet can do, grouped so it's easy to scan.
 - Character cards — build your own detailed characters (name, description, personality, style, settings).
 - Import and export character cards (V2/V3) — bring in the standard `.png` character cards used by other popular AI chat apps, and export your own back out in the same format. Cards are cross-compatible both directions, so you don't have to recreate a library you already own. Honest note: most cards carry over cleanly, but some may need a little tweaking after import.
 - Lorebook import — embedded lorebooks come across with their underlying information preserved, and card details like creator, tags, version, and notes are kept and handed back when you export. Now fully exposed. Honest note: an imported lorebook is flattened into always-on lore rather than staying keyword-triggered, so all the content is there, it just arrives as one block instead of firing on cue.
+- Memory files — give a character `.md` notes (a quest log, a journal) and it reads back the parts that matter to the moment. When a character writes a file in a reply, **Save to memory** keeps it, and saving a newer version replaces the old one. Matched by meaning with the small retrieval model, by shared words without it. See `docs/RAG_INFO.md`.
 - User-controlled RAG lorebook — give a character a lorebook and GobboNet pulls in only the parts that matter to the current moment, using two approaches at once: meaning-based matching (via the small retrieval model) and weighted tag matching for lore you've structured yourself. Honest note: it degrades gracefully — if the retrieval model isn't running, tag matching carries on by itself and chat is never blocked.
 - Lorebook + RAG lorebook work together to auto-update new information from extended conversations.
 - lorebooks travel with the card — export a character and its lorebook rides along inside the file, so sharing a character shares everything it knows.
@@ -445,7 +451,7 @@ Everything GobboNet can do, grouped so it's easy to scan.
 - System prompt editing — change the underlying instructions that shape how the AI behaves.
 - System prompt carousel — save several system prompts and swap between them quickly.
 - Response controls — fine-tune things like temperature and top-k to make replies more focused or more creative.
-- Banned words — discourage specific words from appearing (best-effort, not guaranteed, appears to be bugged at this time).
+- Banned words — keep specific words out of a character's replies, from a nudge to an outright ban. Single words work best; CHECK shows what gets banned.
 - Model selector — choose which AI model you're talking to.
 - Model hot-swap — switch to a different downloaded model without restarting anything.
 

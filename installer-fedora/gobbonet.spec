@@ -328,6 +328,13 @@ fi
 %{_datadir}/icons/hicolor/256x256/apps/gobbonet.png
 
 %changelog
+* Fri Oct 23 2026 GobboNet - 1.7.8-1
+- 1.7.8. Same package layout, launcher flow and engine (llama.cpp b10456).
+- Setup wizard: Enter in a field moves to the next step; Mixture-of-Experts
+  models say when they also suit an 8 GB card with enough system RAM, and are
+  not questioned on such a machine.
+- The launcher names a missing python3 instead of failing first-run setup.
+- models.ini carries moe_min_vram and min_ram for the MoE models.
 * Tue Oct 13 2026 GobboNet - 1.7.7-1
 - 1.7.7. Same package layout, launcher and engine (llama.cpp b10456).
 - gobbonet uninstall ends by naming "sudo dnf remove gobbonet" on this

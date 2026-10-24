@@ -110,13 +110,17 @@ func (d *downloads) begin(e catalog.Entry, dir string, opts ...modelfetch.Option
 // model is already installed, and it is compared against /models-list.json
 // rather than used as a path.
 type catalogEntry struct {
-	Index     int     `json:"index"`
-	Display   string  `json:"display"`
-	File      string  `json:"file"`
-	SizeGB    float64 `json:"sizeGB"`
-	MinVRAM   int     `json:"minVRAM"`
-	Ctx       int     `json:"ctx"`
-	Installed bool    `json:"installed"`
+	Index   int     `json:"index"`
+	Display string  `json:"display"`
+	File    string  `json:"file"`
+	SizeGB  float64 `json:"sizeGB"`
+	MinVRAM int     `json:"minVRAM"`
+	// The MoE allowance (issue #65): also suits a card of moeMinVRAM GB with
+	// minRAM GB of system RAM. Omitted for dense models.
+	MoEMinVRAM int  `json:"moeMinVRAM,omitempty"`
+	MinRAM     int  `json:"minRAM,omitempty"`
+	Ctx        int  `json:"ctx"`
+	Installed  bool `json:"installed"`
 	// Buckets are the window's types this model is in -- coding, roleplay,
 	// jack-of-all-trades (roadmap 1.7.7). Empty puts it under ALL MODELS only.
 	Buckets []string `json:"buckets"`
@@ -160,14 +164,16 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	out := make([]catalogEntry, 0, len(cat.Entries))
 	for _, e := range cat.Entries {
 		out = append(out, catalogEntry{
-			Index:     e.Index,
-			Display:   e.Display,
-			File:      e.File,
-			SizeGB:    e.SizeGB,
-			MinVRAM:   e.MinVRAM,
-			Ctx:       e.Ctx,
-			Installed: installed[e.File],
-			Buckets:   nonNil(e.BucketTags()),
+			Index:      e.Index,
+			Display:    e.Display,
+			File:       e.File,
+			SizeGB:     e.SizeGB,
+			MinVRAM:    e.MinVRAM,
+			MoEMinVRAM: e.MoEMinVRAM,
+			MinRAM:     e.MinRAM,
+			Ctx:        e.Ctx,
+			Installed:  installed[e.File],
+			Buckets:    nonNil(e.BucketTags()),
 		})
 	}
 

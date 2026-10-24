@@ -54,6 +54,28 @@ $min = @{
     10 = 24    # Command R 35B             ~19 GB
 }
 
+# Mixture-of-Experts models also fit a smaller card, when system RAM can hold
+# the experts that do not fit on it (issue #65).
+#
+# Only a few billion of their parameters are active per token, and automatic
+# placement keeps the dense part on the GPU and most experts in RAM. Measured
+# on an 8 GB RTX 4070 Laptop with 31.6 GB RAM, once placement left them 2 GB of
+# headroom (PR #66): Qwen3.6 35B-A3B 21.6 t/s, gpt-oss 20B 20.3 t/s, Gemma 4
+# 26B-A4B 21.3 t/s. The $min figures above are what the WHOLE model needs on
+# the card, which is why the menu used to call all three "too slow" there.
+#
+# $moeVram is the smallest card they were measured on. $moeRam is the system
+# RAM each needs beside it: the download, less the ~6 GB an 8 GB card holds,
+# plus ~10 GB for Windows, the browser and the KV cache, rounded up to a common
+# RAM size. MUST match MOE_MIN_VRAM and the PICK_MOE_RAM list in launch.bat;
+# gen-catalog.py refuses to build a catalogue when they disagree.
+$moeVram = 8
+$moeRam = @{
+    5 = 24     # Gemma 4 26B-A4B MoE       ~16 GB
+    6 = 32     # Qwen3.6 35B-A3B MoE       ~22 GB
+    8 = 16     # gpt-oss 20B               ~12 GB
+}
+
 $hwPath = Join-Path $PSScriptRoot 'hardware.json'
 $h = $null
 try {
@@ -128,6 +150,10 @@ foreach ($i in 1..10) {
         if ($min[$i] -le 6) { $m = '' } else { $m = '[ likely too slow without a GPU ]' }
     } elseif ($v -ge $min[$i]) {
         $m = ''
+    } elseif ($moeRam.ContainsKey($i) -and $v -ge $moeVram -and $ram -ge $moeRam[$i]) {
+        # Fits, and says how: a plain blank here would leave someone
+        # wondering why a 22 GB model is unmarked on an 8 GB card.
+        $m = '[ fits: MoE, uses system RAM ]'
     } else {
         $m = '[ needs ~' + $min[$i] + ' GB VRAM - will be slow ]'
     }

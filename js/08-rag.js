@@ -253,14 +253,224 @@ function ragBuildDocPool(book) {
   return docs;
 }
 
+/* ================================================================
+   MEMORY FILES (issue #41)
+
+   A character could already WRITE a file -- a ```file:notes.md block gets a
+   Save button -- but never read one back. card.memoryFiles is a list of
+   { name, text, updated } notes the character keeps: imported in the card
+   editor, or saved straight from a file block it wrote ("Save to memory").
+
+   They are NOT appended to the storybook. parseStorybook reads "# heading"
+   as a new entity, and nearly every .md file starts with one, so a pasted
+   note would turn into a tag-less entity per heading. Instead each file is
+   split at its own headings into prose chunks that join Retriever A's doc
+   pool beside the storybook's. Only the parts that match the conversation
+   enter context, labelled with the file and section they came from.
+
+   Matching is by meaning through the local embedding model when it is
+   running. When it is not -- Nomic is optional, and Retriever A can be
+   switched off -- memory chunks fall back to shared words, so a character
+   without the embedding model still reads its notes rather than silently
+   ignoring them. Everything here runs in the page or on this machine's own
+   embed server; nothing about a memory file leaves the machine.
+================================================================ */
+const MEMORY_LIMITS = Object.freeze({ fileChars: 100000, files: 20, totalChars: 400000, nameChars: 100 });
+const MEMORY_EXT_RE = /\.(md|markdown|txt)$/i;
+const MEMORY_CHUNK_TARGET = 1200;   // characters packed into one chunk
+const MEMORY_CHUNK_MAX = 2000;      // a single paragraph longer than this is split
+
+/* A file name, never a path: the last segment, no control or reserved
+   characters, no leading dots, an .md/.markdown/.txt extension, length-capped.
+   '' when nothing usable is left. */
+function memoryFileName(raw) {
+  let n = String(raw == null ? '' : raw).replace(/\\/g, '/').split('/').pop();
+  n = n.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '').trim().replace(/^\.+/, '').trim();
+  if (!n) return '';
+  if (!MEMORY_EXT_RE.test(n)) n += '.md';
+  if (n.length > MEMORY_LIMITS.nameChars) {
+    const ext = n.match(MEMORY_EXT_RE)[0];
+    n = n.slice(0, MEMORY_LIMITS.nameChars - ext.length).trim() + ext;
+  }
+  return n;
+}
+
+/* A card's memory files, validated. Read through this everywhere rather than
+   card.memoryFiles directly: the field arrives from imports, backups and
+   other devices, and a malformed entry must be skipped, not crash a turn. */
+function cardMemoryFiles(card) {
+  const raw = card && Array.isArray(card.memoryFiles) ? card.memoryFiles : [];
+  const out = [];
+  const seen = new Set();
+  for (const f of raw) {
+    if (!f || typeof f.name !== 'string' || typeof f.text !== 'string') continue;
+    const name = memoryFileName(f.name);
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    out.push({ name, text: f.text, updated: Number(f.updated) || 0 });
+  }
+  return out;
+}
+
+/* Add a file, or replace the one with the same name (case-insensitive),
+   within MEMORY_LIMITS. Returns { ok, files, replaced, name } or
+   { ok: false, error }. `files` is a new array; the input is not touched. */
+function memoryPutFile(files, name, text, now) {
+  const clean = memoryFileName(name);
+  if (!clean) return { ok: false, error: 'A memory file needs a name.' };
+  const body = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+  if (!body.trim()) return { ok: false, error: clean + ' is empty.' };
+  if (body.indexOf('\u0000') >= 0) return { ok: false, error: clean + ' is not a text file.' };
+  if (body.length > MEMORY_LIMITS.fileChars) {
+    return { ok: false, error: clean + ' is ' + body.length.toLocaleString() + ' characters; a memory file can hold up to '
+      + MEMORY_LIMITS.fileChars.toLocaleString() + '.' };
+  }
+  const list = cardMemoryFiles({ memoryFiles: files });
+  const i = list.findIndex(f => f.name.toLowerCase() === clean.toLowerCase());
+  const others = list.filter((_, j) => j !== i);
+  if (i < 0 && others.length >= MEMORY_LIMITS.files) {
+    return { ok: false, error: 'This character already has ' + MEMORY_LIMITS.files + ' memory files. Remove one first.' };
+  }
+  const total = others.reduce((n, f) => n + f.text.length, 0) + body.length;
+  if (total > MEMORY_LIMITS.totalChars) {
+    return { ok: false, error: 'That would give this character ' + total.toLocaleString() + ' characters of memory; the limit is '
+      + MEMORY_LIMITS.totalChars.toLocaleString() + '. Remove or shorten a file first.' };
+  }
+  const entry = { name: clean, text: body, updated: now || Date.now() };
+  if (i >= 0) list[i] = entry; else list.push(entry);
+  return { ok: true, files: list, replaced: i >= 0, name: clean };
+}
+
+/* Split one file into retrieval chunks: at its headings first (outside code
+   fences, so a "# comment" in a shell block is not a heading), then by
+   paragraph, packing paragraphs up to MEMORY_CHUNK_TARGET characters. Each
+   chunk keeps the heading path it sits under ("Quests > Open"), which both
+   labels the injection and helps the match. Cached by content. */
+const _memoryChunkCache = new Map();
+function memoryFileChunks(file) {
+  const key = ragHash(file.name + '\u0000' + file.text);
+  if (_memoryChunkCache.has(key)) return _memoryChunkCache.get(key);
+
+  const sections = [];          // { heading, paras: [] }
+  const stack = [];             // [{ level, title }]
+  let paras = [], para = [], inFence = false;
+  const endPara = () => { if (para.join('\n').trim()) paras.push(para.join('\n').trim()); para = []; };
+  const endSection = () => {
+    endPara();
+    if (paras.length) sections.push({ heading: stack.map(s => s.title).join(' › '), paras });
+    paras = [];
+  };
+  for (const line of file.text.split('\n')) {
+    if (/^\s{0,3}(```|~~~)/.test(line)) { inFence = !inFence; para.push(line); continue; }
+    const h = !inFence && line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (h) {
+      endSection();
+      const level = h[1].length;
+      while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+      stack.push({ level, title: h[2].trim() });
+      continue;
+    }
+    if (!inFence && !line.trim()) { endPara(); continue; }
+    para.push(line);
+  }
+  endSection();
+
+  // A paragraph over the max is cut at sentence ends, else at the max.
+  const pieces = (p) => {
+    if (p.length <= MEMORY_CHUNK_MAX) return [p];
+    const out = [];
+    let rest = p;
+    while (rest.length > MEMORY_CHUNK_MAX) {
+      const head = rest.slice(0, MEMORY_CHUNK_MAX);
+      const cut = Math.max(head.lastIndexOf('. '), head.lastIndexOf('\n'), head.lastIndexOf('? '), head.lastIndexOf('! '));
+      const at = cut > MEMORY_CHUNK_MAX / 2 ? cut + 1 : MEMORY_CHUNK_MAX;
+      out.push(rest.slice(0, at).trim());
+      rest = rest.slice(at).trim();
+    }
+    if (rest) out.push(rest);
+    return out;
+  };
+
+  const chunks = [];
+  for (const s of sections) {
+    let buf = '';
+    const flush = () => {
+      if (!buf.trim()) return;
+      chunks.push({ id: 'mem:' + file.name + '#' + chunks.length, file: file.name, heading: s.heading, text: buf.trim() });
+      buf = '';
+    };
+    for (const p of s.paras.flatMap(pieces)) {
+      if (buf && buf.length + p.length + 2 > MEMORY_CHUNK_TARGET) flush();
+      buf += (buf ? '\n\n' : '') + p;
+    }
+    flush();
+  }
+  _memoryChunkCache.set(key, chunks);
+  if (_memoryChunkCache.size > 200) _memoryChunkCache.delete(_memoryChunkCache.keys().next().value);
+  return chunks;
+}
+
+/* The card's memory chunks as retrieval docs. `text` is what gets embedded
+   (file and heading included, so "check your notes" can match); `payload`
+   is what is injected, under `label`. */
+function ragMemoryDocs(card) {
+  const docs = [];
+  for (const f of cardMemoryFiles(card)) {
+    for (const c of memoryFileChunks(f)) {
+      const where = c.file + (c.heading ? ' › ' + c.heading : '');
+      docs.push({ id: c.id, kind: 'memory', parent: null, entityId: null,
+                  text: where + '\n' + c.text, payload: c.text, label: 'Memory file: ' + where });
+    }
+  }
+  return docs;
+}
+
+/* Shared-word scoring, the fallback when there is no embedding to compare.
+   Distinct words of three letters or more, minus the commonest English ones;
+   the score is the cosine of the two word sets. */
+const RAG_STOPWORDS = new Set(('the and for are but not you your yours with this that these those have has had '
+  + 'from they them their there what when where which who whom will would could should about into than then '
+  + 'just like been were was its our out can all any also only over some such very more most much many other '
+  + 'each here how why yes did does doing done get got let may might must shall too off own same she her him '
+  + 'his hers one two now new say said see seen way well back still even want know think going because '
+  + 'while after before again once under upon onto being').split(' '));
+function ragKeywords(text) {
+  const out = new Set();
+  const words = String(text || '').toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_'\-]*/gu) || [];
+  for (const w of words) {
+    const t = w.replace(/^['\-]+|['\-]+$/g, '').replace(/'s$/, '');
+    if (t.length >= 3 && !RAG_STOPWORDS.has(t)) out.add(t);
+  }
+  return out;
+}
+function ragKeywordScore(queryWords, docText) {
+  const d = ragKeywords(docText);
+  if (!queryWords.size || !d.size) return { shared: 0, score: 0 };
+  let shared = 0;
+  for (const w of queryWords) if (d.has(w)) shared++;
+  return { shared, score: shared / Math.sqrt(queryWords.size * d.size) };
+}
+
+/* The one system line that tells the model its memory files exist and how to
+   change one. Only for a card that has some; '' otherwise, so no other card's
+   prompt changes by a byte. */
+function cardMemoryIndexText(card) {
+  const files = cardMemoryFiles(card);
+  if (!files.length) return '';
+  return '[Memory files]\nYou keep these files: ' + files.map(f => f.name).join(', ') + '. '
+    + 'When part of one matters, it is included as [Memory file: ...]. To change one, write the whole file again in a '
+    + '```file:' + files[0].name + ' block with the same name, and the user can save it back to your memory.';
+}
+
 /* Opportunistic ingest: embed-and-cache all of a card's docs ahead of time
    (fire-and-forget). Called on card save so the first chat turn isn't the one
-   paying the indexing cost. Silently no-ops if the embed server is down. */
+   paying the indexing cost. Silently no-ops if the embed server is down.
+   Memory files are embedded too (issue #41). */
 async function ragIngestCard(card) {
   try {
     if (!state.settings.retrievalEnabled || !state.settings.retrieverA) return;
     const book = getCardStorybook(card);
-    const docs = ragBuildDocPool(book);
+    const docs = ragBuildDocPool(book).concat(ragMemoryDocs(card));
     for (const d of docs) { await ragEmbedCached(d.text, 'document'); }
   } catch (e) { /* degrade silently */ }
 }
@@ -323,7 +533,8 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
       semantic_backstop: !!cfg.semanticBackstop,
       embed_available: false,          // set true below if a query embed succeeds
       top_k_a: cfg.topKA,
-      retrieval_budget_tokens: cfg.retrievalBudgetTokens
+      retrieval_budget_tokens: cfg.retrievalBudgetTokens,
+      near_end: !!cfg.retrievalNearEnd
     },
     window: { messages_scanned: 0, tokens_scanned: 0, hash: '' },
     budget: budgetSnapshot,
@@ -352,16 +563,18 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
     if (!cfg.retrievalEnabled) { record.budget.retrieval_tokens = 0; return finish(); }
 
     const book = getCardStorybook(card);
+    const memoryDocs = ragMemoryDocs(card);
     record.cards_in_play.push({
       card_id: card.id,
       tag_count: book.order.reduce((n, id) => n + book.entities[id].tags.length, 0),
       weight_total: book.order.reduce((n, id) => n + book.entities[id].tags.reduce((s, t) => s + t.weight, 0), 0),
-      subtree_count: book.counts.subtrees
+      subtree_count: book.counts.subtrees,
+      memory_chunks: memoryDocs.length
     });
 
     // Nothing authored → still emit a (cheap) record so the per-turn contract
     // holds, but skip all the work.
-    const hasContent = book.order.length > 0 || book.proseChunks.length > 0;
+    const hasContent = book.order.length > 0 || book.proseChunks.length > 0 || memoryDocs.length > 0;
     if (!hasContent) { record.budget.retrieval_tokens = 0; return finish(); }
 
     // ---- recent window (trigger surface) ----
@@ -421,7 +634,7 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
 
     // ---- Retriever A: semantic (+ backstop). Query embed is the only
     //      per-turn embed call; doc vectors are cached from ingest. ----
-    const docs = ragBuildDocPool(book);
+    const docs = ragBuildDocPool(book).concat(memoryDocs);
     if (cfg.retrieverA && docs.length) {
       const qvec = await ragEmbedRaw(windowText, 'query');
       if (qvec) {
@@ -444,9 +657,35 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
           const c = touch(targetId);
           c.semScore = Math.max(c.semScore, s.sim);
           c.triggers.add('semantic'); // also serves as the backstop for B entities
-          if (s.d.entityId == null) c.prose = s.d.text; // standalone doc payload
+          if (s.d.entityId == null) c.prose = s.d.payload || s.d.text; // standalone doc payload
+          if (s.d.kind === 'memory') { c.kind = 'memory'; c.label = s.d.label; }
         }
       }
+    }
+
+    // ---- memory files without embeddings: shared words (issue #41) ----
+    // Only when there is no semantic match to be had -- Retriever A off, or
+    // the embed server not answering -- and only for memory chunks: the
+    // storybook keeps exactly the behaviour it had. A chunk needs two
+    // distinct shared words, so one common word in passing does not pull a
+    // whole section in.
+    if (memoryDocs.length && !record.config.embed_available) {
+      const qWords = ragKeywords(windowText);
+      const hits = [];
+      for (const d of memoryDocs) {
+        const k = ragKeywordScore(qWords, d.text);
+        if (k.shared >= 2 && k.score >= 0.05) hits.push({ d, k });
+      }
+      hits.sort((a, b) => b.k.score - a.k.score);
+      for (const h of hits.slice(0, cfg.topKA || 5)) {
+        const c = touch(h.d.id);
+        c.kind = 'memory';
+        c.label = h.d.label;
+        c.prose = h.d.payload;
+        c.semScore = Math.max(c.semScore, Math.min(0.8, 0.3 + h.k.score));
+        c.triggers.add('keyword');
+      }
+      record.config.memory_keyword_fallback = true;
     }
 
     // ---- relational one-hop expansion (gated by offscreen_default) ----
@@ -487,6 +726,7 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
       if (c.triggers.has('thematic_cluster')) return 'thematic_cluster';
       if (c.triggers.has('relational')) return 'relational';
       if (c.triggers.has('semantic')) return 'semantic';
+      if (c.triggers.has('keyword')) return 'keyword';
       if (c.triggers.has('warmth')) return 'warmth';
       return 'manual';
     };
@@ -546,7 +786,7 @@ async function runRetrieval(thread, card, freeForRetrieval, budgetSnapshot) {
         continue;
       }
       spent += tokenCost;
-      injections.push({ entityId: r.id, text: injectText, tokenCost });
+      injections.push({ entityId: r.id, text: injectText, tokenCost, label: r.c.label || null });
       record.candidates.push(_ragCandRow(r, tokenCost, true, null, !!usePrinciples));
       // re-light warmth for anything actually included via a real fire
       if (r.tt === 'identity' || r.tt === 'thematic_cluster' || r.tt === 'semantic') {
@@ -707,8 +947,13 @@ async function buildContextMessages(thread, card, opts) {
   let summary = getThreadLore(thread);
   const summaryTokens = (summary && card.loreEnabled) ? estimateTokens(summary) + 4 : 0;
 
+  // The one-line index of the card's memory files (issue #41): their names,
+  // and how to change one. Empty -- and free -- for a card that has none.
+  const memoryIndexText = cardMemoryIndexText(card);
+  const memoryIndexTokens = memoryIndexText ? estimateTokens(memoryIndexText) + 4 : 0;
+
   let usedTokens = writingStyleTokens + personalityTokens + authoredLoreTokens
-                 + personaTokens + summaryTokens;
+                 + personaTokens + summaryTokens + memoryIndexTokens;
 
   // Live (non-archived) messages — what we'd send if no compression
   // happened this turn. Pre-compute per-message token costs so we can
@@ -733,7 +978,8 @@ async function buildContextMessages(thread, card, opts) {
     // grow, so we don't immediately bounce back over the line.
     const summaryReserve = Math.max(summaryTokens, 1024);
     const targetTotal    = Math.floor(budget * TARGET_FACTOR);
-    const fixedOverhead  = writingStyleTokens + personalityTokens + authoredLoreTokens + personaTokens;
+    const fixedOverhead  = writingStyleTokens + personalityTokens + authoredLoreTokens + personaTokens
+                         + memoryIndexTokens;
     const targetLive     = Math.max(0, targetTotal - fixedOverhead - summaryReserve);
     const tokensToFree   = Math.max(0, liveTokens - targetLive);
 
@@ -885,7 +1131,7 @@ async function buildContextMessages(thread, card, opts) {
       // caller as tokensUsed so the status bar shows reality.
       liveMsgs = thread.messages.filter(m => !m.archived);
       usedTokens = writingStyleTokens + personalityTokens + authoredLoreTokens + personaTokens
-                 + (summary ? estimateTokens(summary) + 4 : 0);
+                 + (summary ? estimateTokens(summary) + 4 : 0) + memoryIndexTokens;
       saveState();
       renderMessages();   // surface the dimming + lore divider immediately
     }
@@ -908,6 +1154,18 @@ async function buildContextMessages(thread, card, opts) {
   // the conversation, then (just before the final user turn) the response
   // direction and the USER's persona. Lock in character/user names at call
   // time so translateTemplates can't race with a card switch mid-build.
+  //
+  // PROMPT ORDER (CONFIG > Prompt Order, settings.retrievalNearEnd). The
+  // engine keeps the last prompt it read and reuses it up to the first
+  // character that differs; everything after that point is read again. The
+  // retrieved snippets change from turn to turn, so with them up top almost
+  // the whole prompt -- the conversation included -- is read again on every
+  // message. With the setting on they go just before the newest message,
+  // next to the response direction and persona that already sit there, so
+  // only the end of the prompt changes. Off keeps the order above.
+  //
+  // FUTURE: the whole order is meant to become the user's to arrange. Until
+  // then this one switch moves the one block that changes most.
   const charName = card.name || 'Assistant';
   const userName = personaForBuild.name || 'Anonymous';
 
@@ -940,12 +1198,13 @@ async function buildContextMessages(thread, card, opts) {
   // still emits a telemetry record. Diagnostic builds (gobboDiag) suppress
   // emission + warmth mutation via opts.diag.
   let retrievalTokens = 0;
+  const ragMsgs = [];
   if (!opts.diag) {
     const summaryTokensNow = (summary && card.loreEnabled) ? estimateTokens(summary) + 4 : 0;
     const budgetSnapshot = {
       token_limit: tokenLimit,
       budget: budget,
-      system_tokens: writingStyleTokens + personalityTokens,
+      system_tokens: writingStyleTokens + personalityTokens + memoryIndexTokens,
       lore_summary_tokens: authoredLoreTokens + summaryTokensNow,
       live_convo_tokens: recentTotal,
       retrieval_tokens: 0,
@@ -966,14 +1225,27 @@ async function buildContextMessages(thread, card, opts) {
           for (const id of bk.order) for (const t of bk.entities[id].tags) allTerms.push(t.term);
         } catch (e) {}
         const scrubbed = ragScrubWeightAnnotations(inj.text, allTerms);
-        apiMessages.push({
+        ragMsgs.push({
           role: 'system',
-          content: '[Storybook: ' + inj.entityId + ']\n' + translateTemplates(scrubbed, charName, userName)
+          content: '[' + (inj.label || ('Storybook: ' + inj.entityId)) + ']\n' + translateTemplates(scrubbed, charName, userName)
         });
       }
     } catch (e) {
       console.warn('[rag] injection skipped:', e && e.message);
     }
+  }
+  // Near the end only when there is a user message to put them in front of;
+  // otherwise (nothing sent yet) where they have always been.
+  const ragBeforeIdx = (state.settings && state.settings.retrievalNearEnd === true)
+    ? finalRecent.map(m => m.role).lastIndexOf('user') : -1;
+  if (ragBeforeIdx < 0) apiMessages.push(...ragMsgs);
+
+  // ---- 4b. MEMORY FILES index (issue #41) — after the retrieved parts
+  // (or, with Prompt Order on, before them: its wording, "is included as",
+  // holds either way), before the writing style. Only for a card that has
+  // memory files. ----
+  if (memoryIndexText) {
+    apiMessages.push({ role: 'system', content: memoryIndexText });
   }
 
   // ---- 5. WRITING STYLE (primary directive) — emitted LAST among the
@@ -990,6 +1262,11 @@ async function buildContextMessages(thread, card, opts) {
   for (let i = 0; i < finalRecent.length; i++) {
     const m = finalRecent[i];
     const isLastUserMsg = m.role === 'user' && i === finalRecent.length - 1;
+    // The snippets, when the setting puts them near the end: ahead of the
+    // response direction and persona, so those stay closest to the message.
+    // The last user message may be followed by an empty reply slot (a
+    // reroll), which is why this is its own index and not isLastUserMsg.
+    if (i === ragBeforeIdx) apiMessages.push(...ragMsgs);
     // Just before the final user turn, in ascending priority: the optional
     // per-response narrative nudge, then the USER's persona LAST so it sits
     // immediately against the user message (recency = highest weight). The

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -60,6 +61,15 @@ type Perf struct {
 // XDG install keeps both in ~/.config/gobbonet.
 func PerfPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "perf.toml")
+}
+
+// IsPerfOverlay reports whether data is a perf.toml this package wrote: it
+// starts with perfTOML's first line. `gobbonet uninstall` uses it before
+// deleting a perf.toml from a folder GobboNet does not own, where a file of
+// that generic name could be somebody else's.
+func IsPerfOverlay(data []byte) bool {
+	first, _, _ := strings.Cut(perfTOML, "\n")
+	return strings.HasPrefix(string(data), first+"\n")
 }
 
 // LoadPerf reads the overlay at path. A missing file is not an error — it is

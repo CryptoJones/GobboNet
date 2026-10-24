@@ -62,6 +62,11 @@ menu and desktop shortcuts. On the first run that window:
 5. downloads the model;
 6. hands over to `gobbonet.exe` and opens the browser.
 
+*In 1.7.8:* the finish page and the shortcuts run `gobbonet.exe launch`
+instead, from the 1.7.6 hotfix. The first run is the same console, since
+launch runs `launch.bat` when there are no settings yet; later launches skip
+the questions. See `CHANGELOG-1.7.8-hotfix-installers.md`.
+
 **Two places this differs from the flow as you wrote it:**
 
 - **"Detect hardware" happens in that console window, just before the model

@@ -590,9 +590,13 @@ func TestUsableEmbeddedTemplate(t *testing.T) {
 }
 
 // llama.cpp's built-in chat template names, as registered in src/llama-chat.cpp
-// at b9294 — the OLDER of the two engines this project pins (Windows; Linux is
-// on b10456). Taking the older one deliberately: a name valid only on the newer
-// engine would still be a bug on Windows.
+// at b9294. Windows first runs downloaded b9294 until 1.7.8, when launch.bat
+// started reading engine.sha256 (b10456) like everything else, and a Windows
+// install keeps the engine it already downloaded. So b9294 is still the oldest
+// engine in the field, and the list stays at it on purpose: a name valid only
+// on the newer engine would still be a bug there. Every name below is also
+// present at b10456 (checked against its src/llama-chat.cpp: 54 names, a
+// superset of these 53; b10456 adds granite-4.1).
 //
 // Passing a name llama.cpp does not know is not a soft failure. Its detector
 // falls back to treating the argument as the template *body*, so every request

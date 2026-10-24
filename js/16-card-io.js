@@ -391,6 +391,22 @@ function _cardDataToInternal(data, spec, imageDataUrl) {
     if (ext && typeof ext.ragStorybook === 'string') ragStorybook = ext.ragStorybook;
   } catch (e) {}
 
+  // Memory files ride the same way (issue #41). Each one goes through
+  // memoryPutFile, so a shared card cannot bring in a path for a name, a
+  // binary blob, or more than the limits allow; anything that fails is left
+  // behind rather than failing the whole import.
+  let memoryFiles = [];
+  try {
+    const ext = data.extensions && data.extensions.gobbonet;
+    if (ext && Array.isArray(ext.memoryFiles)) {
+      for (const f of ext.memoryFiles) {
+        if (!f || typeof f.name !== 'string' || typeof f.text !== 'string') continue;
+        const r = memoryPutFile(memoryFiles, f.name, f.text);
+        if (r.ok) memoryFiles = r.files;
+      }
+    }
+  } catch (e) { memoryFiles = []; }
+
   const card = {
     ...DEFAULT_CARD,
     id: generateId(),
@@ -401,6 +417,7 @@ function _cardDataToInternal(data, spec, imageDataUrl) {
     loreEnabled: true,
     startingLore: startingLore,
     ragStorybook: ragStorybook,
+    memoryFiles: memoryFiles,
     greeting: greeting,
     altGreetingsEnabled: altList.length > 0,
     altGreetings: altGreetings,
@@ -433,6 +450,17 @@ function _cardDataToInternal(data, spec, imageDataUrl) {
   } catch (e) {
     card.customCode = '';
     card.customCodeEnabled = false;
+  }
+  // A lore prompt that came with the card. Text, capped; it is visible and
+  // editable in the editor, and only ever sent to the local model.
+  try {
+    const ext = (data.extensions && data.extensions.gobbonet) || {};
+    const lp = typeof ext.lorePrompt === 'string' ? ext.lorePrompt.replace(/\u0000/g, '').slice(0, LORE_PROMPT_MAX_CHARS) : '';
+    card.loreCustomPrompt = !!lp.trim();
+    card.lorePrompt = lp.trim() ? lp : '';
+  } catch (e) {
+    card.loreCustomPrompt = false;
+    card.lorePrompt = '';
   }
   return card;
 }
@@ -747,7 +775,15 @@ function _cardToV3(card) {
     extensions: (() => {
       const g = {};
       if (card.ragStorybook && card.ragStorybook.trim()) g.ragStorybook = card.ragStorybook;
+      // Memory files (issue #41): name and text only. Other apps ignore the
+      // namespaced key; GobboNet reads it back through memoryPutFile.
+      const memory = cardMemoryFiles(card);
+      if (memory.length) g.memoryFiles = memory.map(f => ({ name: f.name, text: f.text }));
       if (card.customCode && card.customCode.trim()) g.customCode = card.customCode;
+      // The card's own lore prompt, only when it uses one.
+      if (card.loreCustomPrompt && typeof card.lorePrompt === 'string' && card.lorePrompt.trim()) {
+        g.lorePrompt = card.lorePrompt.slice(0, LORE_PROMPT_MAX_CHARS);
+      }
       return Object.keys(g).length ? { gobbonet: g } : {};
     })(),
     group_only_greetings: [],
@@ -1026,7 +1062,10 @@ function _liveCardSnapshot() {
     altGreetingsEnabled: chk('card-alt-greetings-enabled') ?? card.altGreetingsEnabled,
     altGreetings: val('card-alt-greetings') ?? card.altGreetings,
     startingLore: val('card-starting-lore') ?? card.startingLore,
-    ragStorybook: val('card-rag-storybook') ?? card.ragStorybook
+    ...((typeof readLorePromptEditor === 'function') ? readLorePromptEditor(card) : {}),
+    ragStorybook: val('card-rag-storybook') ?? card.ragStorybook,
+    // The editor's pending memory list, unsaved imports and removals included.
+    memoryFiles: document.getElementById('card-memory-files') ? _memoryEditorFiles() : card.memoryFiles
   };
 }
 

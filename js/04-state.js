@@ -76,6 +76,11 @@ const DEFAULT_CARD = {
   // models-list.json — the same list the header dropdown uses. Anything the
   // user has dropped into that folder is a valid choice; nothing else is.
   loreModelFile: '',
+  // The lore prompt (js/07-prompt.js, THE LORE PROMPT). Off: the built-in
+  // LORE_DEFAULT_PROMPT. On: lorePrompt, written in the card editor's
+  // "Edit the lore summary prompt" box.
+  loreCustomPrompt: false,
+  lorePrompt: '',
   startingLore: '',
   // RAG Storybook — the big, hand-authored character/world bible. Accepts
   // structured weighted-tag lines (Retriever B) AND/OR plain prose chunks
@@ -84,6 +89,11 @@ const DEFAULT_CARD = {
   // ON DEMAND — only the entity/subtree a scene needs enters context. See
   // parseStorybook() and the RAG ENGINE block for the full grammar.
   ragStorybook: '',
+  // Memory files (issue #41): [{ name, text, updated }] -- .md notes the
+  // character reads back through retrieval, imported in the editor or saved
+  // from a ```file:name.md block it wrote. Read via cardMemoryFiles()
+  // (js/08-rag.js), which validates them; see MEMORY_LIMITS there.
+  memoryFiles: [],
   // Pre-set opening message injected into new threads as the character's
   // first assistant turn. NOT model-generated — verbatim from this field.
   // {{char}} / {{user}} / macros are resolved at thread-creation time.
@@ -187,7 +197,7 @@ function resolveSmartLimit(card) {
      contextKeepPercent   of that, the most recent turns, which   (22)
                           are never summarised
 
-   Per character, falling back to the setting (presettable from gobbonet.toml's
+   Per character, falling back to the setting (presettable from config.toml's
    [ui] table), falling back to the old constant -- so nothing moves for anyone
    who leaves them alone. A card field that is blank, null or absent INHERITS;
    0 is a real value for the two that allow it.
@@ -339,7 +349,14 @@ const DEFAULT_SETTINGS = {
   semanticBackstop: true,      // A also scores B's entities for allusive scenes
   topKA: 5,                    // top-k semantic results from Retriever A
   retrievalBudgetTokens: 6000, // ceiling carved from the existing context budget
-  retrievalWindowMsgs: 4       // how many recent messages form the trigger window
+  retrievalWindowMsgs: 4,      // how many recent messages form the trigger window
+  // Where the retrieved lorebook snippets go in the prompt. false: with the
+  // character, above the conversation (how it has always been). true: just
+  // before the newest message, so the part of the prompt that changes from
+  // turn to turn sits at the end and the engine can reuse the rest from its
+  // cache instead of reading the whole conversation again. CONFIG > Prompt
+  // Order; see buildContextMessages in js/08-rag.js.
+  retrievalNearEnd: false
 };
 
 // Extensions: custom stylesheets and scripts the user can inject.

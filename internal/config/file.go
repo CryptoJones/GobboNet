@@ -149,6 +149,8 @@ gpu_layers = -1
 # Free GPU memory targeted by automatic fitting, per device, in MiB.
 # A target, not a hard allocation cap; other applications can allocate later.
 # CPU offload uses system RAM. No model or context reduction is performed.
+# Mixture-of-Experts models use at least 2048 (they page out to system RAM at
+# 1024 on cards they do not fit); set this above 2048 to raise that too.
 gpu_reserve_mib = 1024
 
 # Context window in tokens. Must not exceed the model's maximum.
@@ -156,6 +158,12 @@ ctx_size = 16384
 
 # KV cache quantization type. Common values: q8_0, q4_0, f16.
 kv_cache_type = "q8_0"
+
+# How long a model may take to load, in seconds, before the load counts
+# as failed: at start-up, when switching models, when it comes back after
+# idle stand-down, and after a restart from CONFIG > Performance. Raise it
+# for a big model on a slow disk or a CPU-only machine. 10 to 7200.
+model_load_timeout_seconds = 180
 
 # --- Directories --------------------------------------------------------
 # Server-side data: models, the chat state backup, and llama-server logs.
@@ -207,6 +215,12 @@ job_max_concurrent = 1
 
 # How long a finished generation stays available for a client to collect.
 job_max_age_hours = 48
+
+# How long to wait for a reply to start, in seconds: the time llama.cpp
+# spends reading the prompt before the first word. A long chat on a
+# CPU-only machine can need more than the default. Once the reply is
+# streaming this no longer applies. 10 to 86400.
+reply_start_timeout_seconds = 300
 
 # idle_standdown_minutes
 #   Unload the model after this many minutes with no messages,

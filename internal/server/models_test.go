@@ -645,3 +645,25 @@ func TestCatalogJSONCarriesBuckets(t *testing.T) {
 		t.Errorf("an untagged model's buckets = %#v, want an empty list", models[1].(map[string]any)["buckets"])
 	}
 }
+
+// Issue #65: a Mixture-of-Experts model carries its small-card allowance, so
+// the window can say it also suits an 8 GB card beside enough system RAM. A
+// dense model leaves both keys out.
+func TestCatalogJSONCarriesTheMoEAllowance(t *testing.T) {
+	srv, _ := newTestServer(t)
+	cat := withCatalog(t, srv)
+	cat.Entries[0].MoEMinVRAM, cat.Entries[0].MinRAM = 8, 24
+
+	models := decode(t, do(t, srv, http.MethodGet, "/catalog.json", nil))["models"].([]any)
+	moe := models[0].(map[string]any)
+	if moe["moeMinVRAM"] != float64(8) || moe["minRAM"] != float64(24) {
+		t.Errorf("MoE model = %v", moe)
+	}
+	dense := models[1].(map[string]any)
+	if _, ok := dense["moeMinVRAM"]; ok {
+		t.Errorf("dense model carries moeMinVRAM: %v", dense)
+	}
+	if _, ok := dense["minRAM"]; ok {
+		t.Errorf("dense model carries minRAM: %v", dense)
+	}
+}

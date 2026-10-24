@@ -243,6 +243,50 @@ input[type="range"]::-moz-range-thumb {
   background: #0a0a0f;
   color: rgba(0,243,255,0.85);
 }
+/* Older history kept through an upgrade: a bar under the chat header, in the
+   column's own flow so it never covers the message box or the send button. */
+.recovery-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 20px;
+  border-bottom: 1px solid rgba(255,170,0,0.35);
+  background: rgba(255,170,0,0.07);
+  color: rgba(255,170,0,0.95);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.recovery-notice-text { flex: 1; min-width: 0; }
+.recovery-notice .btn { flex: none; }
+.recovery-notice-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.recovery-notice-close:hover, .recovery-notice-close:focus-visible { opacity: 1; }
+@media (max-width: 700px) {
+  .recovery-notice { padding: 6px 8px 6px 12px; gap: 6px; }
+}
+
+/* DATA holds a recovery: an amber dot rather than a longer label. */
+#data-btn.has-recovery { border-color: rgba(255,170,0,0.55); }
+#data-btn.has-recovery::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(255,170,0,0.95);
+  vertical-align: middle;
+}
+
 /* Restart-to-activate toast */
 #model-switch-toast {
   position: fixed;
@@ -906,6 +950,16 @@ input[type="range"]::-moz-range-thumb {
 .standdown-status[data-tone="ok"]  { color: var(--green-neon); }
 .standdown-status[data-tone="err"] { color: var(--red-neon); }
 
+/* CONFIG > Config File (config.toml). The file is read as written: no
+   wrapping, so a long comment line scrolls instead of breaking. */
+.config-file-path { font-size: 12px; color: var(--cyan-mid); margin: 0 0 10px; overflow-wrap: anywhere; }
+.config-file-path code { color: var(--cyan-bright); }
+.form-group textarea.config-file-text {
+  min-height: 320px; font-size: 12px; line-height: 1.5;
+  white-space: pre; overflow-wrap: normal; overflow-x: auto; tab-size: 4;
+}
+.form-group textarea.config-file-text.dirty { border-color: var(--magenta); }
+
 /* A stand-down control that cannot do anything is disabled rather than hidden,
    so the reason beside it is what the user reads. Dimmed enough to say "not
    now" without being unreadable. */
@@ -914,3 +968,36 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ---- Hint tooltips: the "?" beside a feature's one-line note -------------
+   js/18-utils.js (HINT TOOLTIPS). The button is small to look at and larger
+   to touch: ::after widens the target to about 32px without moving text. */
+.tip-btn {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin: 0 0 0 6px; padding: 0;
+  vertical-align: 1px;
+  border: 1px solid var(--cyan-dim); border-radius: 50%;
+  background: transparent; color: var(--cyan-bright);
+  font: 700 10px/1 var(--font); font-style: normal;
+  cursor: help;
+}
+.tip-btn::after { content: ""; position: absolute; inset: -8px; }
+.tip-btn:hover, .tip-btn.tip-open { background: rgba(0,243,255,0.12); border-color: var(--cyan-bright); }
+.tip-btn:focus-visible { outline: 2px solid var(--cyan-bright); outline-offset: 2px; }
+.tip-body[hidden] { display: none !important; }
+#tip-pop {
+  position: fixed; z-index: 2000;
+  box-sizing: border-box;
+  max-width: 360px; overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--elevated, #0b0f14);
+  border: 1px solid var(--cyan-dim); border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.75), 0 0 0 1px rgba(0,243,255,0.08);
+  color: var(--cyan-mid, #9fe8ef);
+  font-size: 12.5px; line-height: 1.55; font-style: normal;
+  text-align: left; white-space: normal; overflow-wrap: anywhere;
+}
+#tip-pop[hidden] { display: none; }
+#tip-pop strong, #tip-pop b { color: var(--cyan-bright); }
+#tip-pop code { font-size: 11.5px; }

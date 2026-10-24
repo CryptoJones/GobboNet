@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -374,7 +375,8 @@ func cmdServe(argv []string) error {
 				GPULayers:   cfg.GPULayers,
 				KVCacheType: cfg.KVCacheType,
 			},
-			LogFile: cfg.LogFile(),
+			LogFile:     cfg.LogFile(),
+			LoadTimeout: cfg.ModelLoadTimeout(),
 			// The engine's output, mirrored into this window as it arrives.
 			//
 			// Until 1.7.5 this was nil in effect: llama.cpp's stdout went to the
@@ -575,18 +577,42 @@ func lanAddrNote(a server.LANAddr) string {
 // because nothing is. The range is reserved, not occupied. That distinction is
 // the whole reason the failure is hard to diagnose, so the check that reveals
 // it goes in the output rather than in a wiki page nobody reaches.
-func lanBindHelp(cfg config.Config) []string {
+func lanBindHelp(cfg config.Config) []string { return lanBindHelpFor(runtime.GOOS, cfg) }
+
+// lanBindHelpFor is lanBindHelp for a named platform. Each platform gets only
+// its own steps (issue #63): Linux users used to be sent to netsh and
+// setup-lan.bat, neither of which exists there.
+func lanBindHelpFor(goos string, cfg config.Config) []string {
+	setPort := fmt.Sprintf("       gobbonet config set listen_port 9067   (writes %s)", cfg.Path)
+	if goos == "windows" {
+		return []string{
+			"To reach this from your phone, try, in order:",
+			"",
+			"  1. Check whether the port sits in a reserved range --",
+			"       netsh interface ipv4 show excludedportrange protocol=tcp",
+			"     If it does, pick a port outside every listed range:",
+			setPort,
+			"",
+			"  2. Run setup-lan.bat as Administrator to open the firewall.",
+		}
+	}
+	// Loopback bound and the wide address did not: on Linux and macOS that is
+	// a port below 1024, or another program holding the port on one of this
+	// machine's addresses.
+	holder := fmt.Sprintf("       ss -ltnp | grep :%d", cfg.ListenPort)
+	if goos == "darwin" {
+		holder = fmt.Sprintf("       lsof -nP -iTCP:%d -sTCP:LISTEN", cfg.ListenPort)
+	}
 	return []string{
 		"To reach this from your phone, try, in order:",
 		"",
-		"  1. Windows: check whether the port sits in a reserved range --",
-		"       netsh interface ipv4 show excludedportrange protocol=tcp",
-		"     If it does, pick a port outside every listed range:",
-		fmt.Sprintf("       gobbonet config set listen_port 9067   (writes %s)", cfg.Path),
+		"  1. Ports below 1024 need root. Use a higher one:",
+		setPort,
 		"",
-		"  2. Windows: run setup-lan.bat as Administrator to open the firewall.",
+		"  2. See whether another program holds the port on another address:",
+		holder,
 		"",
-		"  3. Linux/macOS: ports below 1024 need root. Use a higher one.",
+		"  3. Run gobbonet doctor: it checks the bind and the firewall.",
 	}
 }
 

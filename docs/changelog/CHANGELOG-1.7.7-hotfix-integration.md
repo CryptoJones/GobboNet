@@ -13,7 +13,8 @@ atomic browser migration/restores, recovery UI and sync failure protection,
 and the Windows direct launch command and ZIP shortcut repair scripts.
 
 Application packaging now includes the shortcut repair scripts and update
-instructions. Installer integration remains a separate phase. The historical
+instructions. Installer integration remains a separate phase. (It followed in
+1.7.8: see `CHANGELOG-1.7.8-hotfix-installers.md`.) The historical
 1.7.6 changelogs describe the recovered patches, not validation performed now.
 
 Validation: all 40 JavaScript suites passed. Go tests for 18 packages passed,

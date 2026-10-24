@@ -26,6 +26,13 @@ default verbosity threshold.
 python3 tests/test-engine-args.py
 ```
 
+`test-stop-script.py` checks that `stop-gobbonet.bat` stops only the install it
+belongs to. Its second half runs the script's real PowerShell routine against a
+fake Windows process table. That needs PowerShell 7 (`pwsh`) on `PATH`, or
+`GOBBONET_TEST_PWSH` pointing at one; without it that half is skipped and says
+so. Windows PowerShell 5.1 runs the routine for real, so it sticks to syntax both
+versions accept.
+
 `test-prompt-safety.py` and `test-image-url-gate.mjs` cover the three fixes from
 PR #30 (John McCardle). The first pins the confirmation-prompt hygiene in
 `launch.bat` and the sanitizer routing in `identify-model.ps1` — neither can run
@@ -66,6 +73,48 @@ edit survives *and* the pass's beat is kept where the two can be separated.
 Background is in
 [`docs/changelog/CHANGELOG-1.7.4-lore-editing.md`](../docs/changelog/CHANGELOG-1.7.4-lore-editing.md).
 
+`test-lore-prompt.mjs` covers the instructions a compression pass sends, and
+the card editor's "Edit the lore summary prompt" box. The old instructions
+carried a worked example with two names in it, and small models copied them
+into people's lore. Sections A, B and E pin that the default names no one and
+that nothing sent says those names. Section D pins that a reply which is the
+template itself is not stored. Background is in
+[`docs/changelog/CHANGELOG-1.7.8-lore-prompt.md`](../docs/changelog/CHANGELOG-1.7.8-lore-prompt.md).
+
+`test-hint-tooltips.mjs` covers the "?" beside feature notes: every one
+points at its own hidden note, each visible line is one sentence, and warnings
+stay in sight rather than only in a tooltip. Background is in
+[`docs/changelog/CHANGELOG-1.7.8-hint-tooltips.md`](../docs/changelog/CHANGELOG-1.7.8-hint-tooltips.md).
+
+`test-config-file-panel.mjs` covers CONFIG > Config File, the config.toml
+editor, against a stub server. The server side (this PC only, secrets hidden,
+every save checked) is tested in Go: `internal/config/editfile_test.go` and
+`internal/server/configfile_test.go`. Background is in
+[`docs/changelog/CHANGELOG-1.7.8-config-file-editor.md`](../docs/changelog/CHANGELOG-1.7.8-config-file-editor.md).
+
+`test-windows-staging.py` covers `installer-win/stage-payload.sh`, which stages
+the Windows installer's payload from the release ZIP: exactly the files
+`gobbonet.nsi` installs, byte for byte, and never without `gobbonet.exe`.
+Background is in
+[`docs/changelog/CHANGELOG-1.7.8-windows-installer-build.md`](../docs/changelog/CHANGELOG-1.7.8-windows-installer-build.md).
+
+`test-swap-timeout.mjs` covers how long the page waits for a model to load. The
+server's limit is `model_load_timeout_seconds` in config.toml, reported in
+`/swap-status`; the page waits that long plus a margin, so the server's reason
+arrives first. The settings themselves are tested in Go
+(`internal/config/timeouts_test.go`, `internal/supervisor/load_timeout_test.go`,
+`internal/jobs/reply_start_test.go`, `internal/proxy/reply_start_test.go`).
+Background is in
+[`docs/changelog/CHANGELOG-1.7.8-timeout-settings.md`](../docs/changelog/CHANGELOG-1.7.8-timeout-settings.md).
+
+`test-prompt-order.mjs` covers CONFIG > Prompt Order: where the retrieved
+lorebook snippets go. Off (the default) must send exactly what earlier builds
+sent; on puts them just before the newest message. Section C renders each
+prompt and measures how much of it differs from the previous turn's, which is
+what the engine has to read again. The same was measured on the real engine
+for the changelog. Background is in
+[`docs/changelog/CHANGELOG-1.7.8-prompt-order.md`](../docs/changelog/CHANGELOG-1.7.8-prompt-order.md).
+
 `test-version-stamp.mjs` covers the build identity in the ABOUT panel. Section
 A is the load-bearing one: it asserts the frontend's `GOBBONET_UI_VERSION`
 equals the `VERSION` file, so bumping one without the other fails the suite.
@@ -76,7 +125,7 @@ noticed. The rest covers the server-vs-page mismatch warning, which is how a
 cached frontend gets told apart from a real regression. Background is in
 [`docs/changelog/CHANGELOG-1.7.4-about-version.md`](../docs/changelog/CHANGELOG-1.7.4-about-version.md).
 
-`test-server-presets.mjs` covers the `[ui]` table in `gobbonet.toml`, which
+`test-server-presets.mjs` covers the `[ui]` table in `config.toml`, which
 seeds browser settings from the config file. The rule it exists to protect is
 seed-not-lock: a device that has its own settings keeps them and is only
 offered the presets. Section D asserts the key list is generated from
@@ -222,6 +271,9 @@ model wants:
 - It asks nothing when the figure is unknown or the request fails.
 - Declining sends nothing.
 - Accepting downloads.
+- A Mixture-of-Experts model on a card of at least 8 GB asks nothing when the
+  machine's RAM covers the model's `min_ram`, and otherwise says what would
+  make it fit (issue #65).
 
 The GPU reading is in `internal/engine/devices_test.go` and
 `internal/setup/gpu_test.go`. Background is in
@@ -257,6 +309,139 @@ the live list borrowing buckets from the bundled one, is in
 
 ```sh
 python3 tests/test-catalog-buckets.py
+```
+
+`test-memory-files.mjs` covers characters reading their `.md` memory files
+back (issue #41), on the real code from `js/`:
+
+- names, limits and validation;
+- chunking at headings, with code fences respected;
+- retrieval by meaning with an embedding server, by shared words without
+  one, nothing with retrieval off, and the storybook unchanged;
+- the labelled parts and the index of files in the prompt;
+- the editor's pending list;
+- *Save to memory* going to the speaker's card, with a question before a
+  replace;
+- the card export and import round trip, with names and limits enforced.
+
+```sh
+node tests/test-memory-files.mjs
+```
+
+`test-banned-phrases.mjs` covers a card's Banned Phrases list (issue #51), on
+the real code from `js/06-state-sync.js`, against a stand-in `/tokenize` with a
+small vocabulary:
+
+- the word a phrase is stopped at, and the forms of a word that are tried;
+- the token banned for each form: its own, a safe leading piece, never a
+  short fragment, a common word or a space;
+- the `logit_bias` sent, with `false` at -100 and a strength from an imported
+  card kept in range;
+- an engine without pieces, and one that is down;
+- the cache: one round of `/tokenize` per model, not per message;
+- CHECK's readout, as text;
+- the page, both request sites, and the docs that called the feature broken.
+
+`BANNED_SYNC_SRC=<file>` runs the same checks against another copy of
+`06-state-sync.js`, such as the one before the change.
+
+```sh
+node tests/test-banned-phrases.mjs
+```
+
+`test-signin-prompt.mjs` covers the SIGNED OUT prompt, on the real code from
+`js/06-state-sync.js`:
+
+- a 401 is checked once more before the prompt opens: a tab still signed in
+  carries on, and one that is refused again (or cannot ask) locks as before;
+- a burst of 401s makes one check;
+- a locked tab looks again when you come back to it and every few seconds on
+  screen, and carries on once any tab of the browser has signed in.
+
+The server half is Go: `internal/auth/session_test.go` (one client for every
+loopback address and browser string; network sessions still bound) and
+`internal/server/authlog_test.go` (the same through `ServeHTTP`, and the log's
+one line per refused session, with no token in it).
+
+`test-recovery-notice.mjs` covers the older-history notice. It is a bar under
+the chat header now, in the column's flow, not a fixed button over the message
+box. The tests check where it is, when it shows, the x that hides it until the
+offer changes (a storage warning for this visit only), and DATA's amber dot.
+
+```sh
+node tests/test-signin-prompt.mjs
+node tests/test-recovery-notice.mjs
+```
+
+`test-home-screen.py` covers adding GobboNet to a phone's home screen (issue
+#63): the web app manifest and icons, the tags on the chat and login pages,
+and that the files served before sign-in are exactly the ones those name. The
+routes are tested in `internal/server/homescreen_test.go`.
+
+```sh
+python3 tests/test-home-screen.py
+```
+
+`test-docs-current.py` holds the user-facing docs to the program that ships
+(issue #63's docs pass):
+
+- README.md names no `launch.exe` and does not call Linux unsupported;
+- TROUBLESHOOTING.md starts from `gobbonet doctor`, and the messages it quotes
+  are still the program's own;
+- the session lifetime it gives is the config's default;
+- the files PURGE.md names are the ones `gobbonet uninstall` removes.
+
+```sh
+python3 tests/test-docs-current.py
+```
+
+`test-appimage.py` covers the AppImage (issue #53):
+
+- **The runtime:** pinned to a dated release by SHA-256, and an override
+  without a hash is refused.
+- **No update address** embedded, and no appimagetool.
+- **`AppRun`** hands over to the packages' launcher.
+- **python3:** the launcher says it is missing instead of failing the first
+  run.
+
+With a real package (`GOBBONET_TEST_DEB`, plus `GOBBONET_TEST_APPIMAGE_RUNTIME`
+for the pinned runtime file) it also builds one in a scratch copy of the tree:
+
+- the AppImage is the runtime followed by the image;
+- it holds exactly the `.deb`'s files;
+- it starts;
+- a wrong runtime hash or a CPU-only engine stops the build.
+
+The first run through it is `test-linux-onboarding.py` with
+`GOBBONET_TEST_ENTRY` set to the AppImage.
+
+```sh
+GOBBONET_TEST_DEB=installer-linux/dist/gobbonet_X_amd64.deb \
+GOBBONET_TEST_APPIMAGE_RUNTIME=installer-linux/vendor/appimage-runtime-20251108-x86_64 \
+  python3 tests/test-appimage.py
+```
+
+`test-moe-offer.py` covers offering the three Mixture-of-Experts models to
+8-12 GB cards when there is enough system RAM (issue #65):
+
+- **The generator:** `gen-catalog.py` writes `moe_min_vram` and `min_ram` for
+  those three models only, and refuses to build when `hw-recommend.ps1` and
+  `launch.bat` disagree about them.
+- **The menu:** `hw-recommend.ps1` is run for real under `pwsh` against a
+  stand-in `hardware.json`, and marks those models
+  `[ fits: MoE, uses system RAM ]` only when both rules hold. The
+  recommendation does not change. Skipped without `pwsh`; set
+  `GOBBONET_TEST_PWSH`.
+- **The download warning:** `launch.bat` skips it only under the MoE rule, and
+  otherwise says what would make the model fit.
+
+The Go side (the catalogue fields, the live list borrowing them from the
+bundled one, and the wizard's RAM reading) is in `internal/catalog/moe_test.go`
+and `internal/setup/ram_test.go`. Background is in
+[`docs/changelog/CHANGELOG-1.7.8-moe-small-cards.md`](../docs/changelog/CHANGELOG-1.7.8-moe-small-cards.md).
+
+```sh
+GOBBONET_TEST_PWSH=/path/to/pwsh python3 tests/test-moe-offer.py
 ```
 
 `test-download-testing.mjs` covers the *Add a Model* button, live again for
@@ -324,8 +509,10 @@ same first run through an extracted ZIP's front door, also set
 
 `test-version-strings.py` holds the release number's literal copies to
 `VERSION`: `installer-win/gobbonet.nsi`'s `APPVER`, `OutFile` and
-`VIProductVersion`, and `installer/gobbonet.nsi`'s use of its define. The page
-stamp has its own test, `test-version-stamp.mjs`.
+`VIProductVersion`, and `installer/gobbonet.nsi`'s use of its define. It also
+holds the Fedora package's two hand-edited copies: `FEDORA.md`'s `dnf install`
+line and the spec's newest changelog entry. The page stamp has its own test,
+`test-version-stamp.mjs`.
 
 `test-windows-installer.py` holds the Windows installer to being
 `installer-win/`, with the flow it has had since 1.7.0:
@@ -336,6 +523,8 @@ stamp has its own test, `test-version-stamp.mjs`.
 - **No model step:** no backend choice and no model download during setup.
 - **The console:** *Launch GobboNet* and the shortcuts open `launch.bat`,
   which detects the hardware, offers the models, then hands over with `--open`.
+- **Phone access:** the Start Menu's LAN Setup shortcut is marked *Run as
+  administrator*, which `setup-lan.bat` needs.
 - **The payload:**
   - every helper `launch.bat` runs is installed;
   - `models.ini` is installed and removed;
@@ -369,6 +558,19 @@ Background is in
 
 ```sh
 python3 tests/test-linux-installer.py
+```
+
+`test-linux-start-here.py` holds `LINUX-START-HERE.md`'s `apt`, `dnf` and
+AppImage commands to the files people download. GitHub drops the `+` from
+release asset names, so each command has to match the package both as built
+(`gobbonet_<version>+go.<sha>-1_amd64.deb`) and as downloaded
+(`gobbonet_<version>go.<sha>-1_amd64.deb`). 1.7.7's `apt` command matched only
+the first. It also checks the page is titled for the release in `VERSION`.
+Background is in
+[`docs/changelog/CHANGELOG-1.7.8-linux-installer.md`](../docs/changelog/CHANGELOG-1.7.8-linux-installer.md).
+
+```sh
+python3 tests/test-linux-start-here.py
 ```
 
 `test-zip-entry.py` covers the ZIP's front door: the Linux ZIP's `./gobbonet` is a
@@ -418,7 +620,15 @@ retries, merged/orphaned records, old copies and read failure protection.
 copies. Go coverage is in `internal/state/legacy_test.go` and
 `internal/server/legacy_history_test.go`, including encryption and restart.
 
-Windows application launch regression: `go test ./cmd/gobbonet` covers fresh,
-existing, explicit-missing and corrupt configuration decisions. Installer
-shortcut regression checks will be integrated during the installer phase.
-Native Windows installer/shortcut smoke tests remain required.
+Windows launch regression: `python3 tests/test-windows-launch.py` checks both
+installer sources and the ZIP's repair-script shortcut targets, and that the
+uninstaller removes the links the installer makes. `go test ./cmd/gobbonet`
+covers fresh, existing, explicit-missing and corrupt configuration decisions,
+and a first run that stopped early: launch.bat's `.gobbonet-setup-pending`
+mark beside a config with no engine sends `launch` back to setup.
+`tests/test-launch-secret-handoff.py` checks where launch.bat sets and clears
+that mark. Native Windows installer/shortcut smoke tests remain required.
+
+```sh
+python3 tests/test-windows-launch.py
+```

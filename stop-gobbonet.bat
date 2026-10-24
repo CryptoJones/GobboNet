@@ -51,7 +51,23 @@ if not exist "%SYS32%\cmd.exe" set "SYS32=%windir%\System32"
 if exist "%SYS32%\cmd.exe" set "PATH=%SYS32%;%SYS32%\WindowsPowerShell\v1.0;%PATH%"
 
 set "QUIET="
-if /i "%~1"=="/quiet" set "QUIET=1"
+:: The install folder whose processes this stops. By default the folder this
+:: script is in; the installer passes $INSTDIR, because before it replaces
+:: files it runs a copy of this script from its temporary plugins folder,
+:: where %~dp0 is not the install (issue #63).
+set "GN_DIR=%~dp0"
+:args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="/quiet" (
+    set "QUIET=1"
+) else if exist "%~1\" (
+    set "GN_DIR=%~f1"
+    if "!GN_DIR:~-1!"=="\" set "GN_DIR=!GN_DIR:~0,-1!"
+    set "GN_DIR=!GN_DIR!\"
+)
+shift
+goto :args
+:args_done
 
 if not defined QUIET (
     echo.
@@ -68,19 +84,28 @@ set "FAILED="
 :: given a moment to take its child down cleanly.
 call :stop_image "gobbonet.exe"
 
-:: llama.cpp. Normally already gone with its parent; killed directly in case
-:: it was orphaned by an earlier crash, because it holds the GPU.
-call :stop_image "llama-server.exe"
+:: Everything below is matched to THIS install, never by name alone (issue
+:: #63). The names are generic: a llama-server.exe someone runs from their own
+:: llama.cpp build, another program's launch.bat or fileserver.ps1. Someone
+:: stopping GobboNet, or running its uninstaller, has not agreed to lose those.
+
+:: The launch.bat windows of this install -- its health monitor on the legacy
+:: path, which would otherwise restart llama-server below, and the window that
+:: ran gobbonet.exe. Matched by the full path of this folder's launch.bat on
+:: the command line. The window this script is running in, and the ones that
+:: started it, are never touched. (From PR #59, orcmaul.)
+call :stop_matching "cmd.exe" cmdline "launch.bat" "the launch.bat window"
+
+:: llama.cpp. Normally already gone with its parent; stopped directly in case
+:: it was orphaned by an earlier crash, because it holds the GPU. Matched by
+:: where the executable lives: inside this install. An engine configured to
+:: run from elsewhere still stops with gobbonet.exe, its parent, above.
+call :stop_matching "llama-server.exe" path "" "llama-server"
 
 :: The legacy PowerShell file server, from installs that predate the Go
-:: server. Targeted by COMMAND LINE, not by image name: killing every
-:: powershell.exe on the machine would take unrelated work with it, and
-:: someone running an uninstaller has not agreed to that.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=@(Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*fileserver.ps1*' }); if ($p.Count -gt 0) { $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 10 } else { exit 0 }" >nul 2>&1
-if errorlevel 10 (
-    if not defined QUIET echo  [OK] Stopped the legacy PowerShell file server.
-    set "STOPPED=1"
-)
+:: server. Matched by this install's fileserver.ps1 on the command line:
+:: killing every powershell.exe would take unrelated work with it.
+call :stop_matching "powershell.exe" cmdline "fileserver.ps1" "the legacy PowerShell file server"
 
 :: Give Windows a moment to release the file handles. Without this the
 :: delete that follows can still fail on a process that has just exited.
@@ -88,16 +113,22 @@ if "!STOPPED!"=="1" ping -n 2 127.0.0.1 >nul 2>&1
 
 if not defined QUIET (
     echo.
+    rem Pause only when something needs reading; otherwise close by itself
+    rem after a few seconds, or at once on a keypress. From PR #59.
     if defined FAILED (
         echo  [!] Something would not stop. Close it and run this again,
         echo      or reboot -- a reboot always clears it.
+        echo.
+        pause
     ) else if "!STOPPED!"=="1" (
         echo  [OK] Done. Nothing of GobboNet's is running now.
+        echo.
+        timeout /t 10 >nul
     ) else (
         echo  [OK] Nothing was running.
+        echo.
+        timeout /t 10 >nul
     )
-    echo.
-    pause
 )
 if defined FAILED exit /b 1
 exit /b 0
@@ -123,7 +154,9 @@ ping -n 3 127.0.0.1 >nul 2>&1
 tasklist /fi "imagename eq !_IMG!" 2>nul | findstr /i "!_IMG!" >nul 2>&1
 if not errorlevel 1 (
     taskkill /F /IM "!_IMG!" >nul 2>&1
-    ping -n 2 127.0.0.1 >nul 2>&1
+    rem Longer than the polite wait: a forced kill can take a few seconds to
+    rem release the GPU and the port. From PR #59.
+    ping -n 6 127.0.0.1 >nul 2>&1
 )
 
 tasklist /fi "imagename eq !_IMG!" 2>nul | findstr /i "!_IMG!" >nul 2>&1
@@ -136,5 +169,40 @@ if not errorlevel 1 (
 )
 echo  [OK] Stopped !_IMG!
 endlocal & set "STOPPED=1" & goto :eof
+
+:: ===============================================================
+:: :stop_matching <process name> <path^|cmdline> <file in the install> <label>
+::
+:: Stops the processes of that name that belong to THIS install (GN_DIR):
+::   path     its executable lives anywhere under GN_DIR
+::   cmdline  its command line names GN_DIR plus <file>
+:: The process running this script and every process above it are skipped,
+:: so running it from a launch.bat window cannot end its own window.
+::
+:: The values travel in environment variables rather than inside the
+:: command, so a folder with spaces, quotes or brackets in its name cannot
+:: break the quoting. The PowerShell carries no ! % or ^, which cmd would
+:: eat with delayed expansion on. Exit: 0 none found, 10 all stopped,
+:: 11 something survived. Matching is case-insensitive, as Windows paths are.
+:: ===============================================================
+:stop_matching
+set "GN_NAME=%~1"
+set "GN_MODE=%~2"
+set "GN_FILE=%~3"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=$env:GN_DIR; $mode=$env:GN_MODE; $needle=$d+$env:GN_FILE; $skip=@{}; $q=$PID; while ($q -and -not $skip.ContainsKey([int]$q)) { $skip[[int]$q]=1; $q=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$q) -ErrorAction SilentlyContinue).ParentProcessId }; $p=@(Get-CimInstance Win32_Process -Filter ('Name='''+$env:GN_NAME+'''') -ErrorAction SilentlyContinue | Where-Object { $v = if ($mode -eq 'path') { $_.ExecutablePath } else { $_.CommandLine }; if (-not $v -or $skip.ContainsKey([int]$_.ProcessId)) { $false } elseif ($mode -eq 'path') { $v.StartsWith($needle, [StringComparison]::OrdinalIgnoreCase) } else { $v.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 } }); if ($p.Count -eq 0) { exit 0 }; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; for ($i=0; $i -lt 20; $i++) { if (-not @($p | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })) { exit 10 }; Start-Sleep -Milliseconds 250 }; exit 11" >nul 2>&1
+set "_RC=!errorlevel!"
+set "GN_NAME="
+set "GN_MODE="
+set "GN_FILE="
+if "!_RC!"=="10" (
+    if not defined QUIET echo  [OK] Stopped %~4.
+    set "STOPPED=1"
+)
+if "!_RC!"=="11" (
+    echo  [!] Could not stop %~4. Close it and run this again.
+    set "STOPPED=1"
+    set "FAILED=1"
+)
+goto :eof
 
 :after_subs

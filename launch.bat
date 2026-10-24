@@ -413,6 +413,28 @@ exit /b 1
 
 :secret_shape_ok
 
+:: Hand the password to gobbonet.exe now, not only at :launch (issue #63).
+:: :launch is the last step before the server starts, so a run that stopped
+:: anywhere in between -- a cancelled download, a closed window, the model
+:: menu -- left .gobbonet-secret on disk and gobbonet.exe's config.toml with
+:: no password. Starting gobbonet.exe directly after that (the Start menu
+:: shortcut does) asked the user to choose a password a second time.
+::
+:: Same command, same default config file and same salt:hash value as the
+:: write at :launch, which still runs too; this one only lands earlier. The
+:: server accepts the salt:hash form and upgrades it on first login
+:: (internal/auth/secret.go).
+::
+:: The write creates config.toml on a first run, and `gobbonet.exe launch`
+:: (the Start menu and desktop shortcuts) serves any config.toml it finds.
+:: So the run also leaves .gobbonet-setup-pending until :launch: while it is
+:: there and the config still names no engine, launch runs this setup again
+:: instead of serving nothing (cmd/gobbonet/launch.go).
+if not defined GOBBONET_LEGACY_SERVER if exist "%~dp0gobbonet.exe" (
+    type nul > "%~dp0.gobbonet-setup-pending" 2>nul
+    "%~dp0gobbonet.exe" config set access_secret "!ACCESS_SECRET!" >nul 2>&1
+)
+
 :: CTX_SIZE notes:
 ::   This is the default starting value. When you pick a model from
 ::   the download menu, the script will automatically suggest a better
@@ -484,27 +506,38 @@ set "MODEL_DIR=%~dp0models"
 set "SERVER_EXE=!LLAMA_DIR!\llama-server.exe"
 set "LOG_FILE=%~dp0llama-server.log"
 
-:: llama.cpp release pin. The auto-download verifies the zip's SHA-256 against
-:: the digest GitHub's API reports for the asset, then only extracts on a match.
-:: Pinning to a known-good tag (rather than always taking 'latest') means a bad
-:: or hijacked future release can't silently land on users' machines -- you bump
-:: this deliberately after testing a new build. Leave empty to use 'latest'.
-set "LLAMA_PIN_TAG=b9294"
-:: SHA-256 of llama-b9294-bin-win-vulkan-x64.zip as GitHub publishes it.
+:: llama.cpp release pin, read from engine.sha256 beside this script (issue #63).
 ::
-:: Pinning means the zip is refused if the asset is ever replaced under the
-:: same tag (GitHub permits that), if a TLS-intercepting proxy substitutes
-:: it, or if the download is simply truncated -- none of which HTTPS alone
-:: catches. This matters more here than almost anywhere else in the file:
+:: engine.sha256 is the one pin every builder reads -- build-deb.sh,
+:: build-rpm.sh, the installers -- and so does `gobbonet engine install`. This
+:: script used to carry its own copy, and the two drifted: Linux shipped b10456
+:: while every Windows first run downloaded b9294. Reading the same file is what
+:: keeps them one pin.
+::
+:: Pinning (rather than always taking 'latest') means a bad or hijacked future
+:: release can't silently land on users' machines. The hash refuses the zip if
+:: the asset is ever replaced under the same tag (GitHub permits that), if a
+:: TLS-intercepting proxy substitutes it, or if the download is truncated --
+:: none of which HTTPS alone catches. It matters here more than almost anywhere:
 :: the zip contains the executables that run the model.
 ::
-:: This value must correspond to LLAMA_PIN_TAG above; if you bump the tag,
-:: clear this and re-pin from the next download. Leaving it EMPTY still
-:: works but now asks for confirmation before running the result.
-::
-:: Verified 2026-08-19 by downloading the asset and hashing it, not copied
-:: from a third party.
-set "LLAMA_PIN_SHA256=1aff5b8159303b44a5570b85f99d730336935314dec389f0857f992699f43d44"
+:: If engine.sha256 is present but lacks a value, that value stays empty and the
+:: checks below fail closed: a missing tag means the hash cannot match, and a
+:: missing hash asks for an explicit YES before running anything.
+set "LLAMA_PIN_TAG="
+set "LLAMA_PIN_SHA256="
+if exist "%~dp0engine.sha256" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%K in ("%~dp0engine.sha256") do (
+        if /i "%%K"=="LLAMA_BUILD" set "LLAMA_PIN_TAG=%%L"
+        if /i "%%K"=="WIN_GPU_SHA256" set "LLAMA_PIN_SHA256=%%L"
+    )
+) else (
+    rem An install from before engine.sha256 shipped beside this script.
+    rem The same pin as engine.sha256 -- tests/test-engine-pin.py fails the
+    rem build if these two lines and that file ever disagree.
+    set "LLAMA_PIN_TAG=b10456"
+    set "LLAMA_PIN_SHA256=60f3d31cc7c2fe62de8f34f8d75ffd06655b4de83bcc5aa6f08df56be42ebb91"
+)
 
 :: LAUNCH_SCRIPT holds the cmd line we hand to the OS to start llama-server.
 :: It lives in the project root (not %TEMP%) on purpose: fileserver.ps1
@@ -917,10 +950,11 @@ echo      machine.
 echo.
 echo      It arrived over HTTPS from github.com, which is normally fine.
 echo      Pinning it additionally refuses a release asset that gets
-echo      replaced later, and a proxy that intercepts TLS. Set this near
-echo      the top of launch.bat to pin what you just downloaded:
+echo      replaced later, and a proxy that intercepts TLS. To pin what
+echo      you just downloaded, add this line to engine.sha256 beside
+echo      launch.bat:
 echo.
-echo        set "LLAMA_PIN_SHA256=!LLAMA_ACTUAL!"
+echo        WIN_GPU_SHA256=!LLAMA_ACTUAL!
 echo.
 call :prompt_confirm "  Extract and run this UNVERIFIED download?" LLAMA_UNPINNED_OK
 if /i not "!LLAMA_UNPINNED_OK!"=="Y" (
@@ -1203,9 +1237,40 @@ if not "!REC!"=="0" (
     echo   or type a number to choose a different model.
     echo.
 )
+:: Only 1-11 is an answer (issue #63). Anything else used to fall through
+:: every branch below into the [11] "add my own .gguf" path, which ends at
+:: :fatal. The prompt just above this menu is a Y/N question, so "y" was
+:: the natural thing to type, and it closed the window with [FATAL]. Ask
+:: again instead, without reprinting the menu, so the hint stays on screen.
+::
+:: Capped at 5 tries: with no console behind it (input at EOF) set /p returns
+:: empty forever, and an uncapped loop would spin where the old code exited.
+:: After the cap it takes the same [11] path it always did.
+set "_MC_TRIES=0"
+:ask_model_choice
 set "MODEL_CHOICE="
 set /p "MODEL_CHOICE=  Your choice [1-11]: "
 if not defined MODEL_CHOICE if not "!REC!"=="0" set "MODEL_CHOICE=!REC!"
+set "_MC_OK="
+for %%N in (1 2 3 4 5 6 7 8 9 10 11) do if "!MODEL_CHOICE!"=="%%N" set "_MC_OK=1"
+if not defined _MC_OK (
+    set /a _MC_TRIES+=1
+    echo.
+    if !_MC_TRIES! geq 5 (
+        echo  [*] Still no valid choice, so nothing will be downloaded.
+        set "MODEL_CHOICE=11"
+    ) else (
+        if "!REC!"=="0" (
+            echo  [*] That is not one of the choices. Type a number from 1 to 11.
+        ) else (
+            echo  [*] That is not one of the choices. Type a number from 1 to 11,
+            echo      or press ENTER for the recommended pick [!REC!].
+        )
+        echo.
+        goto :ask_model_choice
+    )
+)
+set "_MC_OK="
 
 :: VRAM safety net -- if the chosen model wants more GPU memory than we
 :: detected, warn and confirm rather than letting a non-technical user
@@ -1225,6 +1290,17 @@ if "!MODEL_CHOICE!"=="8" set "PICK_MIN=14"
 if "!MODEL_CHOICE!"=="9" set "PICK_MIN=9"
 if "!MODEL_CHOICE!"=="10" set "PICK_MIN=24"
 if not defined HW_VRAM set "HW_VRAM=0"
+:: Mixture-of-Experts models also fit a smaller card, when system RAM can hold
+:: the experts that do not fit on it (issue #65): MOE_MIN_VRAM of VRAM and the
+:: PICK_MOE_RAM below. The same figures as $moeVram and $moeRam in
+:: hw-recommend.ps1, which explains them; gen-catalog.py checks they agree.
+set "MOE_MIN_VRAM=8"
+set "PICK_MOE_RAM=0"
+if "!MODEL_CHOICE!"=="5" set "PICK_MOE_RAM=24"
+if "!MODEL_CHOICE!"=="6" set "PICK_MOE_RAM=32"
+if "!MODEL_CHOICE!"=="8" set "PICK_MOE_RAM=16"
+if not defined HW_RAM set "HW_RAM=0"
+if !PICK_MOE_RAM! gtr 0 if !HW_VRAM! geq !MOE_MIN_VRAM! if !HW_RAM! geq !PICK_MOE_RAM! set "PICK_MIN=0"
 if !HW_VRAM! gtr 0 if !PICK_MIN! gtr 0 if !HW_VRAM! lss !PICK_MIN! (
     echo.
     echo  [*] Heads up: this model wants about !PICK_MIN! GB of GPU
@@ -1232,6 +1308,12 @@ if !HW_VRAM! gtr 0 if !PICK_MIN! gtr 0 if !HW_VRAM! lss !PICK_MIN! (
     echo       far more slowly than a model that fits, and on a large
     echo       enough shortfall llama-server will fail to start at all
     echo       rather than fall back to system RAM.
+    if !PICK_MOE_RAM! gtr 0 (
+        echo.
+        echo       It is a Mixture-of-Experts model, so a card with at least
+        echo       !MOE_MIN_VRAM! GB also runs it well beside !PICK_MOE_RAM! GB of
+        echo       system RAM. This PC reports !HW_RAM! GB of RAM.
+    )
     echo.
     call :prompt_yn "  Download it anyway?" GO_BIG
     if /i "!GO_BIG!"=="N" goto :show_catalog
@@ -2081,6 +2163,9 @@ set "GN=%~dp0gobbonet.exe"
 "!GN!" config set llm_url         "http://127.0.0.1:!SERVER_PORT!" >nul 2>&1
 "!GN!" config set embed_url       "http://127.0.0.1:!EMBED_PORT!"  >nul 2>&1
 "!GN!" config set access_secret   "!ACCESS_SECRET!"             >nul 2>&1
+:: Setup reached the end: the config names its engine now, and launch can
+:: serve it directly from here on.
+if exist "%~dp0.gobbonet-setup-pending" del /q "%~dp0.gobbonet-setup-pending" >nul 2>&1
 echo  [OK] Settings written.
 echo.
 

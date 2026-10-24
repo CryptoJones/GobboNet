@@ -34,6 +34,9 @@ function openSettings() {
   // Same `!== false` reason as above: absent means sticky, which is what
   // every install that predates this option already had.
   document.getElementById('set-sticky-cards').checked = (state.settings.stickyCards !== false);
+  // Off unless chosen: `=== true`, so a settings blob from before the option
+  // keeps the order it has always had.
+  document.getElementById('set-retrieval-near-end').checked = (state.settings.retrievalNearEnd === true);
   // autoScrollMode() owns the "what counts as valid" rule, so an unrecognised
   // stored value checks the same radio here that it will actually behave as.
   document.querySelectorAll('input[name="set-auto-scroll"]').forEach(el => {
@@ -41,6 +44,7 @@ function openSettings() {
   });
   loadStandDownPanel();
   loadNetworkHostsPanel();
+  loadConfigFilePanel();
   document.getElementById('avatar-scale-val').textContent = Math.round(aScale * 100) + '%';
   // The Add a Model button needs a server to download with; in file:// mode it
   // is hidden with an explanation instead. Runs on open rather than at boot so
@@ -51,7 +55,12 @@ function openSettings() {
 }
 
 function closeSettings() {
-  document.getElementById('settings-modal').classList.remove('open');
+  const modal = document.getElementById('settings-modal');
+  // Unsaved edits to config.toml are not CONFIG's SAVE's to keep, so closing
+  // asks first rather than dropping them. Escape and the backdrop come here too.
+  if (modal.classList.contains('open') && typeof isConfigFileDirty === 'function' && isConfigFileDirty()
+      && !confirm('Discard your unsaved changes to config.toml?')) return false;
+  modal.classList.remove('open');
   applyAvatarScale(); // revert any unsaved live-preview drag back to the saved value
 }
 
@@ -73,6 +82,7 @@ function saveSettings() {
   state.settings.allowRemoteImages = document.getElementById('set-allow-remote-images').checked;
   state.settings.streamReplies = document.getElementById('set-stream-replies').checked;
   state.settings.stickyCards = document.getElementById('set-sticky-cards').checked;
+  state.settings.retrievalNearEnd = document.getElementById('set-retrieval-near-end').checked;
   const scrollPick = document.querySelector('input[name="set-auto-scroll"]:checked');
   if (scrollPick && AUTO_SCROLL_MODES.indexOf(scrollPick.value) >= 0) {
     state.settings.autoScroll = scrollPick.value;
@@ -275,8 +285,11 @@ function createCard() {
     writingStyle: '',
     personality: '',
     loreEnabled: true,
+    loreCustomPrompt: false,
+    lorePrompt: '',
     startingLore: '',
     ragStorybook: '',
+    memoryFiles: [],
     greeting: '',
     altGreetingsEnabled: false,
     altGreetings: '',
@@ -321,6 +334,7 @@ function editCard(id) {
   document.getElementById('card-lore-toggle').value = card.loreEnabled !== false ? 'on' : 'off';
   populateLoreModelSelect(card.loreModelFile || '');
   document.getElementById('card-starting-lore').value = card.startingLore || '';
+  loadLorePromptEditor(card);
   document.getElementById('card-rag-storybook').value = card.ragStorybook || '';
   updateStorybookReadout();
   // Greeting + alt greetings — mirror the carousel toggle pattern so
@@ -373,6 +387,9 @@ function editCard(id) {
   document.getElementById('card-dry-mult-val').textContent = dryMult;
   // Banned phrases / logit bias
   document.getElementById('card-banned-phrases').value = card.bannedPhrases || '';
+  // CHECK's result belongs to the card it was run on.
+  const _bannedReadout = document.getElementById('banned-phrases-readout');
+  if (_bannedReadout) _bannedReadout.textContent = '';
   const lbStrength = card.logitBiasStrength !== undefined ? card.logitBiasStrength : -20;
   document.getElementById('card-logit-strength').value = lbStrength;
   document.getElementById('card-logit-strength-val').textContent = lbStrength;
@@ -403,11 +420,198 @@ function editCard(id) {
   updateCardCodeStatus();
   previewAvatar('card-avatar', 'card-avatar-preview');
   previewBg();
+  loadCardMemoryEditor(card);
   // Snapshot AFTER every field is populated, so "clean" means "exactly as
   // loaded". A card the user created and has not typed into is clean, and
   // backing out of it costs no confirm. See charEditorOpened in
   // js/22-scheduler.js.
   charEditorOpened();
+}
+
+/* ================================================================
+   MEMORY FILES in the editor (issue #41)
+
+   While the editor is open the list is pending, kept as JSON in the hidden
+   #card-memory-files textarea: an import or removal shows at once, SAVE
+   writes it to the card, CANCEL drops it, and the unsaved-changes guard
+   (js/22-scheduler.js) sees it because it fingerprints every textarea.
+   Rows are built as DOM nodes, never from HTML strings: a file name comes
+   from a file the user picked or a block the model wrote.
+================================================================ */
+function _memoryEditorFiles() {
+  const el = document.getElementById('card-memory-files');
+  if (!el) return [];
+  try { return cardMemoryFiles({ memoryFiles: JSON.parse(el.value || '[]') }); }
+  catch (e) { return []; }
+}
+
+function _memoryEditorSet(files, note) {
+  const el = document.getElementById('card-memory-files');
+  if (el) el.value = JSON.stringify(files);
+  renderCardMemoryList(note);
+}
+
+function loadCardMemoryEditor(card) { _memoryEditorSet(cardMemoryFiles(card)); }
+
+function _memorySize(chars) {
+  if (chars < 1000) return chars + ' chars';
+  return (chars / 1000).toFixed(chars < 10000 ? 1 : 0) + 'k chars';
+}
+
+function renderCardMemoryList(note) {
+  const box = document.getElementById('card-memory-list');
+  if (!box) return;
+  const files = _memoryEditorFiles();
+  box.textContent = '';
+  files.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'card-memory-row';
+    const name = document.createElement('span');
+    name.className = 'card-memory-name';
+    name.textContent = f.name;
+    name.title = f.name;
+    const meta = document.createElement('span');
+    meta.className = 'card-memory-meta';
+    const parts = memoryFileChunks(f).length;
+    meta.textContent = _memorySize(f.text.length) + ' \u00b7 ' + parts + (parts === 1 ? ' part' : ' parts');
+    const dl = document.createElement('button');
+    dl.type = 'button';
+    dl.className = 'btn btn-sm';
+    dl.textContent = 'Download';
+    dl.title = 'Save a copy of this file';
+    dl.onclick = () => downloadCardMemoryFile(i);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn btn-sm';
+    rm.textContent = 'Remove';
+    rm.title = 'Remove from this character\'s memory (SAVE to keep the change)';
+    rm.onclick = () => removeCardMemoryFile(i);
+    row.appendChild(name); row.appendChild(meta); row.appendChild(dl); row.appendChild(rm);
+    box.appendChild(row);
+  });
+  const readout = document.getElementById('card-memory-readout');
+  if (readout) {
+    const total = files.reduce((n, f) => n + f.text.length, 0);
+    const summary = files.length
+      ? files.length + (files.length === 1 ? ' file' : ' files') + ' \u00b7 ' + total.toLocaleString()
+        + ' of ' + MEMORY_LIMITS.totalChars.toLocaleString() + ' characters'
+      : 'No memory files yet.';
+    readout.textContent = note ? note + ' \u2014 ' + summary : summary;
+  }
+}
+
+async function importCardMemoryFiles(input) {
+  const picked = Array.from((input && input.files) || []);
+  if (input) input.value = '';   // so picking the same file again fires onchange
+  if (!picked.length) return;
+  let files = _memoryEditorFiles();
+  const notes = [];
+  for (const f of picked) {
+    const fname = f.name || 'file';
+    if (!MEMORY_EXT_RE.test(fname)) { notes.push(fname + ': not a .md or .txt file'); continue; }
+    // Bytes, before reading: a file this large cannot fit, so it is not read.
+    if (f.size > MEMORY_LIMITS.fileChars * 4) { notes.push(fname + ': too large'); continue; }
+    let text;
+    try { text = await f.text(); } catch (e) { notes.push(fname + ': could not be read'); continue; }
+    const r = memoryPutFile(files, fname, text);
+    if (!r.ok) { notes.push(r.error); continue; }
+    files = r.files;
+    notes.push(r.name + (r.replaced ? ' replaced' : ' added'));
+  }
+  _memoryEditorSet(files, notes.join('; '));
+}
+
+function removeCardMemoryFile(i) {
+  const files = _memoryEditorFiles();
+  if (!files[i]) return;
+  const gone = files.splice(i, 1)[0];
+  _memoryEditorSet(files, gone.name + ' removed');
+}
+
+function downloadCardMemoryFile(i) {
+  const f = _memoryEditorFiles()[i];
+  if (!f) return;
+  _downloadBlob(new Blob([f.text], { type: 'text/markdown;charset=utf-8' }), f.name);
+}
+
+/* "Save to memory" on a ```file:name.md block (issue #41).
+ *
+ * The character the block belongs to is the message's speaker -- the same
+ * resolution the avatar uses -- so in a thread with several characters the
+ * file goes to whoever wrote it. A user's own message resolves to the
+ * thread's character. A new file is saved straight away; replacing one asks
+ * first, because the old version is gone afterwards. */
+function saveFileToCardMemory(btn) {
+  const payload = (typeof fileBlockPayload === 'function') ? fileBlockPayload(btn) : null;
+  if (!payload) return;
+  const thread = getActiveThread();
+  const msgEl = btn.closest && btn.closest('[data-index]');
+  const m = thread && msgEl ? thread.messages[Number(msgEl.dataset.index)] : null;
+  const speaker = thread ? makeCastResolver(thread).cardFor(m) : getActiveCard();
+  const card = speaker && speaker.id && state.characterCards.find(c => c.id === speaker.id);
+  if (!card) {
+    showModelSwitchToast('This message has no character to save the file to.', 'err');
+    return;
+  }
+  const name = memoryFileName(payload.filename);
+  const existing = cardMemoryFiles(card);
+  if (existing.some(f => f.name.toLowerCase() === name.toLowerCase())
+      && !confirm('Replace ' + name + ' in ' + card.name + '\'s memory with this version?\n\nThe current version will be gone.')) {
+    return;
+  }
+  const r = memoryPutFile(existing, name, payload.content);
+  if (!r.ok) { showModelSwitchToast(r.error, 'err'); return; }
+  card.memoryFiles = r.files;
+  // An editor open on this same card holds its own pending list; keep it in
+  // step, or saving the editor afterwards would write the old list back.
+  if (editingCardId === card.id && document.getElementById('card-memory-files')) {
+    const er = memoryPutFile(_memoryEditorFiles(), name, payload.content);
+    if (er.ok) _memoryEditorSet(er.files, er.name + (er.replaced ? ' replaced' : ' added') + ' from the chat');
+  }
+  saveState();
+  try { ragIngestCard(card); } catch (e) {}
+  showModelSwitchToast(r.name + (r.replaced ? ' updated in ' : ' saved to ') + card.name + '\'s memory.', 'ok');
+}
+
+/* ---- The lore prompt box (beside the RAG Storybook) -----------------------
+   Ticked: the box shows the card's prompt, or the built-in one to start from.
+   Unticked: the built-in prompt is used and the box is hidden; what was typed
+   stays in it, so unticking and ticking again loses nothing until SAVE. A
+   prompt saved identical to the built-in one is stored as '' -- the card then
+   follows the built-in prompt if it improves in a later release. */
+function loadLorePromptEditor(card) {
+  const box = document.getElementById('card-lore-prompt-custom');
+  const ta = document.getElementById('card-lore-prompt');
+  if (!box || !ta) return;
+  box.checked = !!(card && card.loreCustomPrompt);
+  const own = (card && typeof card.lorePrompt === 'string') ? card.lorePrompt : '';
+  ta.value = own.trim() ? own : LORE_DEFAULT_PROMPT;
+  toggleLorePromptEditor();
+}
+
+function toggleLorePromptEditor() {
+  const box = document.getElementById('card-lore-prompt-custom');
+  const body = document.getElementById('card-lore-prompt-body');
+  const ta = document.getElementById('card-lore-prompt');
+  if (!box || !body) return;
+  body.style.display = box.checked ? '' : 'none';
+  if (box.checked && ta && !ta.value.trim()) ta.value = LORE_DEFAULT_PROMPT;
+}
+
+function resetLorePrompt() {
+  const ta = document.getElementById('card-lore-prompt');
+  if (ta) ta.value = LORE_DEFAULT_PROMPT;
+}
+
+/* The two card fields from the box. Without the box on the page, the card
+   keeps what it had. */
+function readLorePromptEditor(card) {
+  const box = document.getElementById('card-lore-prompt-custom');
+  const ta = document.getElementById('card-lore-prompt');
+  if (!box || !ta) return { loreCustomPrompt: !!(card && card.loreCustomPrompt), lorePrompt: (card && card.lorePrompt) || '' };
+  const text = ta.value.slice(0, LORE_PROMPT_MAX_CHARS);
+  const same = text.trim() === LORE_DEFAULT_PROMPT;
+  return { loreCustomPrompt: box.checked && !!text.trim() && !same, lorePrompt: same ? '' : text };
 }
 
 function saveCard() {
@@ -429,13 +633,20 @@ function saveCard() {
   card.loreEnabled = document.getElementById('card-lore-toggle').value === 'on';
   card.loreModelFile = document.getElementById('card-lore-model').value || '';
   card.startingLore = document.getElementById('card-starting-lore').value;
+  Object.assign(card, readLorePromptEditor(card));
   const _prevStorybook = card.ragStorybook || '';
   card.ragStorybook = document.getElementById('card-rag-storybook').value;
   // Invalidate the parse cache and, if the storybook text changed, embed its
   // docs now (fire-and-forget) so the first chat turn isn't the one paying the
   // indexing cost. Silently no-ops if the embed server is unavailable.
   if (card._storybook) { try { delete card._storybook; } catch (e) { card._storybook = null; } }
-  if (card.ragStorybook !== _prevStorybook && card.ragStorybook.trim()) {
+  // Memory files (issue #41) come from the editor's pending list. Only when
+  // the editor has one: a page without the field must not empty the card.
+  const _prevMemory = JSON.stringify(cardMemoryFiles(card));
+  if (document.getElementById('card-memory-files')) card.memoryFiles = _memoryEditorFiles();
+  const _memoryChanged = JSON.stringify(cardMemoryFiles(card)) !== _prevMemory;
+  if ((card.ragStorybook !== _prevStorybook && card.ragStorybook.trim())
+      || (_memoryChanged && cardMemoryFiles(card).length)) {
     try { ragIngestCard(card); } catch (e) {}
   }
   card.greeting = document.getElementById('card-greeting').value;
@@ -604,7 +815,7 @@ function updateCardCtxHint() {
 
    Four per-character percentages; see resolveContextBudget in js/04-state.js.
    A blank field means "inherit", and its placeholder shows what that is right
-   now -- the setting, which gobbonet.toml's [ui] table can preset, else the old
+   now -- the setting, which config.toml's [ui] table can preset, else the old
    constant -- so blank never reads as "nothing".
 ================================================================ */
 const CARD_BUDGET_FIELDS = {
@@ -1180,5 +1391,214 @@ async function saveNetworkHosts() {
     status.textContent = 'Could not confirm the save. Check the connection, then reopen CONFIG to see the saved names.';
   } finally {
     input.disabled = save.disabled = false;
+  }
+}
+
+/* ================================================================
+   CONFIG FILE PANEL -- config.toml, edited in CONFIG.
+
+   Server-side (internal/server/configfile.go), saved on its own buttons and
+   never by CONFIG's SAVE. The server sends the file with its secrets shown as
+   "(hidden)", checks every save, refuses one made after the file changed
+   elsewhere (409), keeps the version it replaced for UNDO LAST SAVE, and
+   answers anywhere but this PC with where to open it instead.
+================================================================ */
+const _cfgFile = { loaded: '', version: '', hasBackup: false, open: false };
+
+function _cfgEls() {
+  return {
+    path: document.getElementById('config-file-path'),
+    openBtn: document.getElementById('config-file-open'),
+    editor: document.getElementById('config-file-editor'),
+    text: document.getElementById('config-file-text'),
+    notes: document.getElementById('config-file-notes'),
+    save: document.getElementById('config-file-save'),
+    reload: document.getElementById('config-file-reload'),
+    undo: document.getElementById('config-file-undo'),
+    status: document.getElementById('config-file-status'),
+  };
+}
+
+function _cfgStatus(msg, tone) {
+  const { status } = _cfgEls();
+  if (!status) return;
+  status.textContent = msg || '';
+  if (tone) status.dataset.tone = tone; else delete status.dataset.tone;
+}
+
+function isConfigFileDirty() {
+  const { text } = _cfgEls();
+  return !!(_cfgFile.open && text && text.value !== _cfgFile.loaded);
+}
+
+function updateConfigFileDirty() {
+  const { text } = _cfgEls();
+  if (!text) return;
+  const dirty = isConfigFileDirty();
+  text.classList.toggle('dirty', dirty);
+  if (dirty) _cfgStatus('Unsaved changes.', '');
+}
+
+async function _fetchConfigFile() {
+  const resp = await fetch(window.location.origin + '/config/file', { cache: 'no-store' });
+  if (resp.status === 401) throw Object.assign(new Error('Sign in again, then reopen CONFIG to edit config.toml.'), { shown: true });
+  if (!resp.ok) throw new Error('unavailable');
+  return resp.json();
+}
+
+function _cfgShow(data) {
+  const els = _cfgEls();
+  _cfgFile.loaded = data.text || '';
+  _cfgFile.version = data.version || '';
+  _cfgFile.hasBackup = !!data.has_backup;
+  els.text.value = _cfgFile.loaded;
+  els.text.classList.remove('dirty');
+  els.undo.disabled = !_cfgFile.hasBackup;
+  const notes = [];
+  if (Array.isArray(data.env_overrides) && data.env_overrides.length) {
+    notes.push('Set by environment variables, which win over this file: ' + data.env_overrides.join(', ') + '.');
+  }
+  if (data.perf_overrides) {
+    notes.push('CONFIG > Performance has saved its own ctx_size, gpu_layers and kv_cache_type, which win over this file until RESET TO AUTO there.');
+  }
+  els.notes.textContent = notes.join(' ');
+  els.notes.style.display = notes.length ? '' : 'none';
+}
+
+async function loadConfigFilePanel() {
+  const els = _cfgEls();
+  if (!els.path || !els.editor) return;
+  _cfgFile.open = false;
+  els.editor.style.display = 'none';
+  els.openBtn.style.display = 'none';
+  els.path.textContent = '';
+  _cfgStatus('');
+  if (!IS_SERVED) {
+    els.path.textContent = 'Opened from a file rather than the GobboNet server, so there is no config file to edit here.';
+    return;
+  }
+  try {
+    const data = await _fetchConfigFile();
+    if (!data.editable) {
+      els.path.textContent = data.reason || 'config.toml cannot be edited from here.';
+      return;
+    }
+    els.path.textContent = 'In use: ';
+    const code = document.createElement('code');
+    code.textContent = data.path || 'config.toml';
+    els.path.appendChild(code);
+    els.openBtn.style.display = '';
+    _cfgShow(data);
+  } catch (e) {
+    els.path.textContent = e.shown ? e.message : 'The config file is unavailable. Update GobboNet if this server does not offer it.';
+  }
+}
+
+function openConfigFileEditor() {
+  const els = _cfgEls();
+  if (!els.editor || !_cfgFile.version) return;
+  _cfgFile.open = true;
+  els.editor.style.display = '';
+  els.openBtn.style.display = 'none';
+  els.text.value = _cfgFile.loaded;
+  els.text.classList.remove('dirty');
+  _cfgStatus('Saving checks the file first. Changes apply the next time GobboNet starts.');
+  try { els.text.focus(); els.text.setSelectionRange(0, 0); els.text.scrollTop = 0; } catch (_) {}
+}
+
+/* Put the cursor on the line an error names ("line 12"), so it can be fixed. */
+function _cfgGoToLine(msg) {
+  const m = /\bline (\d+)/i.exec(msg || '');
+  const { text } = _cfgEls();
+  if (!m || !text) return;
+  const lines = text.value.split('\n');
+  const n = Math.min(Math.max(1, parseInt(m[1], 10)), lines.length);
+  const start = lines.slice(0, n - 1).reduce((a, l) => a + l.length + 1, 0);
+  try {
+    text.focus();
+    text.setSelectionRange(start, start + lines[n - 1].length);
+    text.scrollTop = Math.max(0, (n - 4) * (parseFloat(getComputedStyle(text).lineHeight) || 18));
+  } catch (_) {}
+}
+
+function _cfgBusy(on) {
+  const els = _cfgEls();
+  for (const b of [els.save, els.reload, els.undo]) if (b) b.disabled = on || (b === els.undo && !_cfgFile.hasBackup);
+}
+
+async function _cfgPost(path, body) {
+  const resp = await fetch(window.location.origin + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch (_) {}
+  return { resp, data };
+}
+
+function _cfgSavedMessage(data, verb) {
+  const changed = Array.isArray(data.changed) ? data.changed : [];
+  let msg = changed.length
+    ? verb + ': ' + changed.join(', ') + '. Restart GobboNet to use it (close its window and start it again).'
+    : verb + '; no setting changed.';
+  if (Array.isArray(data.warnings) && data.warnings.length) {
+    msg += ' This version does not know ' + data.warnings.join(', ') + ' and will ignore it.';
+  }
+  if (data.port_file_error) msg += ' The launcher’s port file could not be updated: ' + data.port_file_error;
+  return msg;
+}
+
+async function saveConfigFile() {
+  const els = _cfgEls();
+  if (!_cfgFile.open || !els.text) return;
+  _cfgBusy(true);
+  _cfgStatus('Checking and saving…', '');
+  try {
+    const { resp, data } = await _cfgPost('/config/file', { text: els.text.value, version: _cfgFile.version });
+    if (!resp.ok) {
+      _cfgStatus(data.error || ('Not saved (HTTP ' + resp.status + ').'), 'err');
+      _cfgGoToLine(data.error);
+      return;
+    }
+    _cfgShow(await _fetchConfigFile());
+    _cfgStatus(_cfgSavedMessage(data, 'Saved'), 'ok');
+  } catch (e) {
+    _cfgStatus('Could not confirm the save. Press RELOAD to see what config.toml says now.', 'err');
+  } finally {
+    _cfgBusy(false);
+  }
+}
+
+async function reloadConfigFile() {
+  if (isConfigFileDirty() && !confirm('Discard your unsaved changes to config.toml and load it again?')) return;
+  _cfgBusy(true);
+  try {
+    _cfgShow(await _fetchConfigFile());
+    _cfgStatus('Loaded config.toml as it is now.', '');
+  } catch (e) {
+    _cfgStatus(e.shown ? e.message : 'Could not load config.toml.', 'err');
+  } finally {
+    _cfgBusy(false);
+  }
+}
+
+async function undoConfigFileSave() {
+  if (!_cfgFile.hasBackup) return;
+  const ask = isConfigFileDirty()
+    ? 'Discard your unsaved changes and put back config.toml as it was before the last save?'
+    : 'Put back config.toml as it was before the last save?';
+  if (!confirm(ask)) return;
+  _cfgBusy(true);
+  try {
+    const { resp, data } = await _cfgPost('/config/file/restore', { version: _cfgFile.version });
+    if (!resp.ok) {
+      _cfgStatus(data.error || ('Not restored (HTTP ' + resp.status + ').'), 'err');
+      return;
+    }
+    _cfgShow(await _fetchConfigFile());
+    _cfgStatus(_cfgSavedMessage(data, 'Put back the previous version'), 'ok');
+  } catch (e) {
+    _cfgStatus('Could not confirm. Press RELOAD to see what config.toml says now.', 'err');
+  } finally {
+    _cfgBusy(false);
   }
 }
