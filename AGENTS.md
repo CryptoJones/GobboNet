@@ -179,9 +179,13 @@ and functions rather than line numbers, because line numbers go stale.
   assistant turn and one `tool` message per call after the built context,
   and asks again, at most five requests per reply, the last without `tools`.
   The engine must run with `--jinja`; a refusal is retried once without tools
-  and noted in the reply. Calls are stored on the message as `toolCalls`,
-  kept per variant, and shown as a collapsed block. There are no built-in
-  tools. `tests/test-card-tools.mjs` pins all of it.
+  and noted in the reply. Consent is re-checked before every request and
+  before calls run, and a call is refused if another card owns the registry
+  by then. Arguments are the model's, parsed but not schema-checked: card
+  authors validate them. Calls are stored on the message as `toolCalls`,
+  kept per variant, and shown as a collapsed block; completed rounds' text
+  rides along as `toolPrefix` so a reload mid-round replays onto it. There
+  are no built-in tools. `tests/test-card-tools.mjs` pins all of it.
 
 ---
 

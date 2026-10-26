@@ -628,6 +628,11 @@ function applyGenerationOutcome(assistantMsg, outcome, style) {
    Without tool definitions this is exactly one runGenerationStream call.
 ================================================================ */
 const TOOL_MAX_ROUNDS = 5;
+// Tool results are appended after the built context, outside the context
+// budget. This caps what one reply may add: once the results run past it, the
+// next request goes without `tools`, so the model has to answer with what it
+// has instead of pushing the prompt past the context window.
+const TOOL_RESULT_BUDGET = 24000;
 
 /** Join streamed tool_calls deltas onto the message, keyed by call index. */
 function mergeToolCallDeltas(msg, delta) {
@@ -636,9 +641,16 @@ function mergeToolCallDeltas(msg, delta) {
   if (!Array.isArray(delta.toolCalls) || !delta.toolCalls.length) return;
   const list = msg._pendingToolCalls || (msg._pendingToolCalls = []);
   for (const d of delta.toolCalls) {
-    let call = list.find(c => c.index === d.index);
+    // llama-server tags every fragment with the call's index
+    // (tools/server/server-chat.cpp). Without one, match the id, or treat a
+    // fragment that names a function as a new call and anything else as a
+    // continuation of the last one, so a server that omits the index still
+    // cannot merge call 2's arguments into call 1.
+    let call = (d.index != null) ? list.find(c => c.index === d.index) : null;
+    if (!call && d.id) call = list.find(c => c.id === d.id);
+    if (!call && d.index == null && !d.name && list.length) call = list[list.length - 1];
     if (!call) {
-      call = { index: d.index, id: null, name: null, arguments: '' };
+      call = { index: (d.index != null) ? d.index : list.length, id: null, name: null, arguments: '' };
       list.push(call);
     }
     if (d.id && !call.id) call.id = d.id;
@@ -652,18 +664,23 @@ function takePendingToolCalls(msg) {
   const list = Array.isArray(msg._pendingToolCalls) ? msg._pendingToolCalls : [];
   delete msg._pendingToolCalls;
   delete msg._finishReason;
-  const stamp = Date.now().toString(36);
-  return list.filter(c => c && c.name).map((c, i) => ({
-    id: c.id || ('call_' + stamp + '_' + i),
+  // Nine alphanumerics: the shape Mistral's v7 templates insist on, and one
+  // every other template accepts, for a server that sent no id.
+  const synth = () => (Math.random().toString(36).slice(2) + '000000000').replace(/[^a-z0-9]/g, '').slice(0, 9);
+  return list.filter(c => c && c.name).map((c) => ({
+    id: c.id || synth(),
     name: c.name,
     arguments: c.arguments || ''
   }));
 }
 
-/** llama-server's refusal when the engine runs without --jinja. */
+/** llama-server's refusal when the engine runs without --jinja:
+ *  "tools param requires --jinja flag" (tools/server/server-common.cpp),
+ *  wrapped by the jobs relay as "upstream HTTP 400: {...}". Matched on the
+ *  one phrase both refusals share, so an unrelated template error that
+ *  happens to mention tools and jinja is not mistaken for it. */
 function isNoJinjaError(message) {
-  const m = String(message || '');
-  return /jinja/i.test(m) && /tool/i.test(m);
+  return /requires --jinja/i.test(String(message || ''));
 }
 
 /** Stop pressed since the round began (either transport). */
@@ -685,15 +702,27 @@ function recordToolCalls(msg, recs) {
  * them. Same signature and result as runGenerationStream, plus `note` when
  * the engine refused the tools array and the turn was retried without it.
  *
- * opts.card  -- the card whose tools apply (default: the active card)
- * opts.tools -- an explicit tools array (tests); default cardToolDefs(card)
+ * opts.card -- the card whose tools apply (default: the active card). The
+ * tools themselves always come from cardToolDefs(card): there is no way to
+ * hand this function a tools array, so the card's switch is the only gate.
+ *
+ * Consent is re-checked before every request and before any call runs. The
+ * card can change under a running reply (activateCard has no generation
+ * guard) and the box can be unticked mid-turn; either drops `tools` from the
+ * next request and stops calls from running, and runCardTool refuses a call
+ * whose card is no longer the one that owns the live registry.
+ *
+ * The text of completed rounds is kept on the message as `toolPrefix` while
+ * a later round runs, so finalizeJobIntoThread can replay a reload onto it
+ * instead of a blank message. It is removed when the loop ends.
  */
 async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = {}) {
   opts = opts || {};
   const card = opts.card || ((typeof getActiveCard === 'function') ? getActiveCard() : null);
-  const tools = Array.isArray(opts.tools) ? opts.tools : cardToolDefs(card);
+  const tools = cardToolDefs(card);
   delete assistantMsg._pendingToolCalls;
   delete assistantMsg._finishReason;
+  delete assistantMsg.toolPrefix;
 
   if (!tools.length) {
     const outcome = await runGenerationStream(thread, assistantMsg, requestBody, opts);
@@ -701,6 +730,14 @@ async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = 
     return outcome;
   }
 
+  try {
+    return await _runToolRounds(thread, assistantMsg, requestBody, opts, card, tools);
+  } finally {
+    delete assistantMsg.toolPrefix;
+  }
+}
+
+async function _runToolRounds(thread, assistantMsg, requestBody, opts, card, tools) {
   const body = Object.assign({}, requestBody, {
     tools: tools,
     messages: (requestBody.messages || []).slice()
@@ -710,10 +747,24 @@ async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = 
   // Where this round's text begins in the message: earlier rounds' text stays
   // on screen ahead of it, but only the round's own words are echoed back.
   let contentFrom = (assistantMsg.content || '').length;
+  let reasoningFrom = (assistantMsg.reasoning || '').length;
+  // Consent, re-read every time it matters. False once the box is unticked,
+  // the code is switched off, or another card took over the registry.
+  const consented = () => cardToolDefs(card).length > 0;
+  let resultChars = 0;
 
   for (let round = 1; round <= TOOL_MAX_ROUNDS; round++) {
     if (round === TOOL_MAX_ROUNDS) delete body.tools;   // the last word has to be text
+    if (body.tools && resultChars > TOOL_RESULT_BUDGET) {
+      console.warn('[card-tool] tool results passed ' + TOOL_RESULT_BUDGET + ' chars; asking without tools');
+      delete body.tools;
+    }
+    if (body.tools && !consented()) {
+      console.warn('[card-tool] consent withdrawn mid-reply; asking without tools');
+      delete body.tools;
+    }
     outcome = await runGenerationStream(thread, assistantMsg, body, opts);
+    const finish = assistantMsg._finishReason || null;
     const calls = takePendingToolCalls(assistantMsg);
 
     if (round === 1 && outcome.errored && isNoJinjaError(outcome.errorMessage)) {
@@ -723,29 +774,47 @@ async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = 
       takePendingToolCalls(assistantMsg);
       return Object.assign({}, outcome, { note: "this model can't use tools: the engine runs it without --jinja" });
     }
-    if (round === TOOL_MAX_ROUNDS) return outcome;   // no tools were offered; strays are dropped
+    if (!body.tools) return outcome;   // none were offered this round; strays are dropped
     if (!calls.length || outcome.errored || outcome.aborted || assistantMsg.smartCapped) return outcome;
     if (toolLoopStopped()) return Object.assign({}, outcome, { aborted: true });
+    if (finish === 'length') {
+      // The reply was cut by the token limit, so the arguments may be too.
+      // Running a half-formed call is worse than the cut the user can see.
+      console.warn('[card-tool] reply cut by the token limit; not running ' + calls.length + ' unfinished call(s)');
+      return outcome;
+    }
+    if (!consented()) {
+      console.warn('[card-tool] consent withdrawn mid-reply; ' + calls.length + ' call(s) not run');
+      return outcome;
+    }
 
     // Settle this round's parser state, so the text that came with the calls
     // is final before it is echoed back and the next round parses cleanly.
     finalizeStreamMessage(assistantMsg);
     const fullText = assistantMsg.content || '';
     const roundText = fullText.slice(Math.min(contentFrom, fullText.length)).trim();
+    const fullReasoning = assistantMsg.reasoning || '';
+    const roundReasoning = fullReasoning.slice(Math.min(reasoningFrom, fullReasoning.length)).trim();
 
     const recs = [];
     for (const c of calls) {
-      recs.push(await runCardTool(c.name, c.arguments, { signal: signal }));
+      recs.push(await runCardTool(c.name, c.arguments, { signal: signal, cardId: card.id, thread: thread }));
     }
     recordToolCalls(assistantMsg, recs);
+    for (const r of recs) resultChars += (r.result || '').length;
     if (toolLoopStopped()) return Object.assign({}, outcome, { aborted: true });
 
-    body.messages.push({
+    const turn = {
       role: 'assistant',
       content: roundText,
       tool_calls: calls.map(c => ({ id: c.id, type: 'function',
                                     function: { name: c.name, arguments: c.arguments } }))
-    });
+    };
+    // Harmony (gpt-oss) and Qwen3 templates read the reasoning that led to a
+    // tool call back from the assistant turn; templates that do not know the
+    // field ignore it. Only this round's reasoning, like the text.
+    if (roundReasoning) turn.reasoning_content = roundReasoning;
+    body.messages.push(turn);
     calls.forEach((c, i) => {
       body.messages.push({ role: 'tool', tool_call_id: c.id, content: recs[i].result });
     });
@@ -754,9 +823,21 @@ async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = 
     if (fullText) assistantMsg.content = fullText + '\n\n';
     if (assistantMsg.reasoning) assistantMsg.reasoning = assistantMsg.reasoning + '\n\n';
     contentFrom = (assistantMsg.content || '').length;
+    reasoningFrom = (assistantMsg.reasoning || '').length;
+    // What a reload mid-round replays onto (finalizeJobIntoThread), instead
+    // of a blank message: the next job's transcript holds only its own round.
+    assistantMsg.toolPrefix = { content: assistantMsg.content || '', reasoning: assistantMsg.reasoning || '' };
     console.log('[card-tool] round ' + round + ': ran ' + calls.length + ' call(s), asking again');
     try { saveState({ skipServerSchedule: true, thread: thread }); } catch (e) {}
-    try { if (thread && state && thread.id === state.activeThreadId) renderMessages(); } catch (e) {}
+    // Same anchor dance as the end of sendMessage: the rebuild resets
+    // scrollTop, and a reader who scrolled up must not be yanked to the top.
+    try {
+      if (thread && state && thread.id === state.activeThreadId) {
+        const anchor = captureScrollAnchor();
+        renderMessages();
+        settleScrollAfterGeneration(anchor);
+      }
+    } catch (e) {}
   }
   return outcome;
 }

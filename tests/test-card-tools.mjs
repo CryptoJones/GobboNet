@@ -24,6 +24,12 @@
  *   F. Wiring: both chat requests go through the loop, the editor and the
  *      defaults carry the switch, variants keep their own calls, the reply
  *      shows a collapsed block.
+ *   G. After independent review: consent is re-checked mid-reply and a call
+ *      is refused once another card owns the registry; a /state blob with
+ *      only toolsEnabled set is still neutralised; a round cut by the token
+ *      limit runs nothing; tool results have a per-reply budget; the text of
+ *      finished rounds survives a reload (toolPrefix); fragments without an
+ *      index still join per call; scratch fields never persist.
  */
 import { fileURLToPath } from 'node:url';
 import fs from 'fs';
@@ -74,7 +80,7 @@ function cardCodeContext(card) {
     getActiveThread: () => ({ id: 't', messages: [] }),
     saveState() {}, render() {},
     document: { getElementById: () => ({ textContent: '', style: {} }) },
-    setTimeout, clearTimeout,
+    setTimeout, clearTimeout, AbortController,
   };
   vm.createContext(ctx);
   vm.runInContext(CARDCODE, ctx);
@@ -140,6 +146,10 @@ console.log('\n=== B. no tools unless the switch is exactly true and the code is
   const blob = { characterCards: [{ id: 'x', customCodeEnabled: true, toolsEnabled: true }] };
   A.neutralizeUntrustedCode(blob);
   eq(blob.characterCards[0].toolsEnabled, false, 'a restored state blob has the tools switch cleared too');
+  const only = { characterCards: [{ id: 'y', customCodeEnabled: false, toolsEnabled: true }] };
+  const n = A.neutralizeUntrustedCode(only);
+  eq(n.cards, 1, 'a card with only the tools switch set counts as changed, so the restore re-serialises it');
+  eq(only.characterCards[0].toolsEnabled, false, 'and its switch is cleared');
 
   A.teardownCardCode();
   eq(A.liveCardTools().length, 0, 'teardown drops the registry');
@@ -188,11 +198,32 @@ console.log('\n=== C. tool_calls deltas split across chunks are joined per call 
 
   const noId = { content: '' };
   ctx.mergeToolCallDeltas(noId, ctx.extractToolCallDeltas(sse({ delta: { tool_calls: [{ index: 0, function: { name: 'x', arguments: '{}' } }] } })));
-  ok(/^call_/.test(ctx.takePendingToolCalls(noId)[0].id), 'a call without an id gets one, so the tool message can name it');
+  ok(/^[a-z0-9]{9}$/.test(ctx.takePendingToolCalls(noId)[0].id), 'a call without an id gets a nine-alphanumeric one (the shape strict templates accept)');
 
   const nameless = { content: '' };
   ctx.mergeToolCallDeltas(nameless, ctx.extractToolCallDeltas(sse({ delta: { tool_calls: [{ index: 0, function: { arguments: '{}' } }] } })));
   eq(ctx.takePendingToolCalls(nameless).length, 0, 'a fragment that never got a name is dropped');
+
+  // A server that omits `index` (llama-server never does: server-chat.cpp
+  // tags every fragment). A named fragment starts a call, a bare one
+  // continues the last, and an id still finds its call.
+  const noIdx = { content: '' };
+  for (const l of [
+    sse({ delta: { tool_calls: [{ id: 'p', function: { name: 'roll_dice', arguments: '{"si' } }] } }),
+    sse({ delta: { tool_calls: [{ function: { arguments: 'des":6}' } }] } }),
+    sse({ delta: { tool_calls: [{ id: 'q', function: { name: 'get_time', arguments: '' } }] } }),
+    sse({ delta: { tool_calls: [{ id: 'p', function: { arguments: '' } }] } }),
+    sse({ delta: { tool_calls: [{ function: { arguments: '{}' } }] } }),
+  ]) ctx.mergeToolCallDeltas(noIdx, ctx.extractToolCallDeltas(l));
+  eq(JSON.stringify(ctx.takePendingToolCalls(noIdx)), JSON.stringify([
+    { id: 'p', name: 'roll_dice', arguments: '{"sides":6}' },
+    { id: 'q', name: 'get_time', arguments: '{}' }
+  ]), 'without an index, call 2 does not swallow call 1: name starts a call, bare fragments continue the last');
+
+  eq(ctx.extractToolCallDeltas(sse({ delta: { content: 'hi' }, finish_reason: null })), null,
+     'a text chunk with "finish_reason":null is not parsed a second time');
+  eq(JSON.stringify(ctx.extractToolCallDeltas(sse({ delta: {}, finish_reason: 'length' }))),
+     '{"toolCalls":[],"finishReason":"length"}', 'a real finish_reason is reported');
 }
 
 /* ================================================================
@@ -214,26 +245,34 @@ function loopContext(script, extra = {}) {
     cardToolDefs: () => TOOLS,
     abortController: { signal: { aborted: false } },
     currentJob: null,
-    saveState() {}, renderMessages() {},
+    saveState() {}, renderMessages() {}, captureScrollAnchor() { return {}; }, settleScrollAfterGeneration() {},
     finalizeStreamMessage(m) { delete m._parseState; m.content = (m.content || '').trim(); },
+    toolCardIds: [],
     async runCardTool(name, args, ex) {
       if (extra.onTool) extra.onTool(ctx, name, args, ex);
-      return { name, args, result: 'result-of-' + name, error: false, ms: 1 };
+      ctx.toolCardIds.push(ex && ex.cardId);
+      return { name, args, result: (extra.result || 'result-of-') + name, error: false, ms: 1 };
     },
+    prefixes: [],
     async runGenerationStream(thread, msg, body) {
       bodies.push(JSON.parse(JSON.stringify(body)));
+      ctx.prefixes.push(msg.toolPrefix ? JSON.parse(JSON.stringify(msg.toolPrefix)) : null);
       const step = script[Math.min(round, script.length - 1)]; round++;
       if (step.errorMessage) return { errored: true, aborted: false, errorMessage: step.errorMessage, jobMode: true };
       msg.content += step.text || '';
+      if (step.reasoning) msg.reasoning = (msg.reasoning || '') + step.reasoning;
       if (step.calls && step.calls.length) {
         msg._pendingToolCalls = step.calls.map((c, i) => ({ index: i, id: c.id, name: c.name, arguments: c.arguments }));
       }
+      if (step.finishReason) msg._finishReason = step.finishReason;
       return { errored: false, aborted: false, jobMode: true };
     },
     ...extra.ctx
   };
   vm.createContext(ctx);
   vm.runInContext(constLine(GEN, 'TOOL_MAX_ROUNDS', 'js/03-generation.js') + '\n'
+    + constLine(GEN, 'TOOL_RESULT_BUDGET', 'js/03-generation.js') + '\n'
+    + fnBody(GEN, 'async function _runToolRounds(thread, assistantMsg, requestBody, opts, card, tools)', 'js/03-generation.js')
     + fnBody(GEN, 'function takePendingToolCalls(msg)', 'js/03-generation.js')
     + fnBody(GEN, 'function isNoJinjaError(message)', 'js/03-generation.js')
     + fnBody(GEN, 'function toolLoopStopped()', 'js/03-generation.js')
@@ -277,6 +316,26 @@ const BASE = { model: 'm', messages: [{ role: 'system', content: 'S' }, { role: 
   eq(outcome.errored, false, 'and the turn ends normally');
   eq(msg._pendingToolCalls, undefined, 'no scratch field is left on the message');
   ok(!('tools' in BASE), 'the caller\'s request body is not mutated');
+  eq(JSON.stringify(ctx.prefixes), JSON.stringify([null,
+    { content: 'Rolling.\n\n', reasoning: '' },
+    { content: 'Rolling.\n\nAgain.\n\n', reasoning: '' }]),
+     'the finished rounds\' text rides on the message as toolPrefix while a later round runs');
+  eq(msg.toolPrefix, undefined, 'and toolPrefix is gone once the loop ends');
+  ok(ctx.toolCardIds.every(id => id === 'c1'), 'every call is run on behalf of the card that offered the tools');
+}
+
+// D1b: the round's reasoning rides on the appended assistant turn
+{
+  const { ctx, bodies } = loopContext([
+    { calls: [{ id: 'r', name: 'get_time', arguments: '{}' }], reasoning: 'Need the time.' },
+    { text: 'Noon.' }
+  ]);
+  const msg = { role: 'assistant', content: '', reasoning: '' };
+  await ctx.runGenerationWithTools({ id: 't' }, msg, BASE, { card });
+  eq(bodies[1].messages[2].reasoning_content, 'Need the time.', 'the assistant turn carries the round\'s reasoning as reasoning_content');
+  const plain = loopContext([{ calls: [{ id: 'r', name: 'get_time', arguments: '{}' }] }, { text: 'Noon.' }]);
+  await plain.ctx.runGenerationWithTools({ id: 't' }, { role: 'assistant', content: '' }, BASE, { card });
+  ok(!('reasoning_content' in plain.bodies[1].messages[2]), 'and no field at all when the round had none');
 }
 
 // D2: the limit
@@ -310,6 +369,10 @@ const BASE = { model: 'm', messages: [{ role: 'system', content: 'S' }, { role: 
   const o2 = await other.ctx.runGenerationWithTools({ id: 't' }, m2, BASE, { card });
   eq(other.bodies.length, 1, 'any other error is not retried');
   eq(o2.errored, true, 'and is returned as it was');
+  const near = loopContext([{ errorMessage: 'upstream HTTP 500: jinja template error while rendering tools' }]);
+  await near.ctx.runGenerationWithTools({ id: 't' }, { role: 'assistant', content: '' }, BASE, { card });
+  eq(near.bodies.length, 1, 'an unrelated template error that mentions jinja and tools is not mistaken for the refusal');
+  ok(near.ctx.isNoJinjaError('tool_choice param requires --jinja flag'), 'the tool_choice refusal is recognised too');
 }
 
 // D4: Stop between rounds
@@ -337,6 +400,41 @@ const BASE = { model: 'm', messages: [{ role: 'system', content: 'S' }, { role: 
   await ctx.runGenerationWithTools({ id: 't' }, msg, BASE, { card });
   eq(bodies.length, 1, 'one request');
   eq(JSON.stringify(bodies[0]), JSON.stringify(BASE), 'byte-identical to the body the caller built: no tools field');
+  ok(!/opts\.tools/.test(GEN), 'there is no way to hand the loop a tools array: cardToolDefs is the only source');
+}
+
+// D6: consent withdrawn mid-reply (box unticked, code off, or another card took the registry)
+{
+  let offers = 0;
+  const { ctx, bodies } = loopContext(
+    [{ calls: [{ id: 'w', name: 'get_time', arguments: '{}' }] }, { text: 'Fine.' }],
+    { ctx: { cardToolDefs: () => (offers++ === 0 ? TOOLS : []) } });
+  const msg = { role: 'assistant', content: '' };
+  await ctx.runGenerationWithTools({ id: 't' }, msg, BASE, { card });
+  eq(bodies.length, 1, 'consent gone after the stream: the calls are not run and no further request is sent');
+  eq(msg.toolCalls, undefined, 'nothing is recorded as run');
+  eq(ctx.toolCardIds.length, 0, 'runCardTool was never called');
+}
+
+// D7: a round cut by the token limit runs nothing
+{
+  const { ctx, bodies } = loopContext([{ calls: [{ id: 'l', name: 'roll_dice', arguments: '{"sid' }], finishReason: 'length' }]);
+  const msg = { role: 'assistant', content: '' };
+  await ctx.runGenerationWithTools({ id: 't' }, msg, BASE, { card });
+  eq(bodies.length, 1, 'finish_reason length: the half-formed call is not run and the loop ends');
+  eq(ctx.toolCardIds.length, 0, 'no tool ran');
+  eq(msg._finishReason, undefined, 'the scratch field is cleared');
+}
+
+// D8: tool results have a per-reply budget
+{
+  const { ctx, bodies } = loopContext([{ calls: [{ id: 'b', name: 'get_time', arguments: '{}' }] }],
+    { result: 'x'.repeat(13000) + '-' });
+  const msg = { role: 'assistant', content: '' };
+  await ctx.runGenerationWithTools({ id: 't' }, msg, BASE, { card });
+  eq(bodies.length, 3, 'two rounds of 13,000-char results pass the 24,000 budget, so the third request is the last');
+  ok(Array.isArray(bodies[1].tools) && !('tools' in bodies[2]), 'and it goes without tools');
+  eq(msg.toolCalls.length, 2, 'the two calls that ran are recorded');
 }
 
 /* ================================================================
@@ -362,6 +460,17 @@ console.log('\n=== E. runCardTool never throws; errors go back to the model as t
   ok(big.result.length < 8100 && /result cut at 8000/.test(big.result), 'a long result is capped at 8,000 characters');
   const ac = new AbortController(); ac.abort();
   eq((await A.runCardTool('get_time', '{}', { signal: ac.signal })).result, 'error: stopped', 'an aborted signal skips the call');
+  eq((await A.runCardTool('get_time', '{}', { cardId: 'c1' })).result, 'noon', 'the owning card may run it');
+  eq((await A.runCardTool('get_time', '{}', { cardId: 'someone-else' })).result,
+     'error: the character changed before this call ran', 'another card\'s call is refused, not run against this registry');
+  const long = await A.runCardTool('get_time', '{"pad":"' + 'y'.repeat(70000) + '"}', {});
+  ok(/^error: arguments too long/.test(long.result), 'arguments over 64 KB are refused');
+  ok(long.args.length < 8100 && /arguments cut at 8000/.test(long.args), 'and the stored copy is cut, like results');
+  vm.runInContext(`gobbo_sig = null; _cardTools.set('watch', { name: 'watch', description: '', parameters: {},
+    fn: (a, c) => new Promise(() => { c.signal.addEventListener('abort', () => { gobbo_sig = 'aborted'; }); }) })`, A);
+  const w = await A.runCardTool('watch', '{}', { timeoutMs: 20 });
+  eq(w.result, 'error: timed out after 20 ms', 'a tool watching its signal still times out');
+  eq(vm.runInContext('gobbo_sig', A), 'aborted', 'and its ctx.signal was aborted by the timeout, so it can stop');
   eq(CARDCODE.match(/console\.log\('\[card-tool\] '/g)?.length, 1, 'every call is logged as [card-tool]');
 }
 
@@ -406,6 +515,18 @@ console.log('\n=== F. call sites, editor, defaults, variants, rendering ===');
      'name, arguments and result all go through escapeHtml');
   ok(!/class="cot-block tool-block"/.test(DASH), 'the block is not a .cot-block, which the streaming painter looks up');
   ok(/\.tool-block \{/.test(CSS) && /\.tool-call-error \.tool-call-result/.test(CSS), 'and it is styled');
+
+  const PERSIST = read('js/05-persistence.js');
+  const rf = PERSIST.match(/const RUNTIME_MESSAGE_FIELDS = \[([^\]]*)\]/);
+  ok(rf && /_pendingToolCalls/.test(rf[1]) && /_finishReason/.test(rf[1]), 'the two scratch fields never reach storage or /state');
+  ok(rf && !/toolPrefix/.test(rf[1]), 'toolPrefix does persist: a reload between rounds replays onto it');
+  ok(/msg\.content = \(msg\.toolPrefix && msg\.toolPrefix\.content\) \|\| '';/.test(CHAT),
+     'finalizeJobIntoThread starts the replay from the finished rounds\' text');
+  ok(/function sweepInterruptedToolLoops\(\)/.test(CHAT) && /sweepInterruptedToolLoops\(\);\s*if \(jobsAvailable === false\)/.test(CHAT),
+     'a loop that died with the page is noted by the boot sweep');
+  ok(/delete msg\.toolPrefix;/.test(CHAT) && /delete assistantMsg\.toolPrefix;/.test(CHAT), 'a reroll clears a stale prefix (both paths)');
+  ok(/parsed but NOT checked against the/.test(HTML) && /validate them in the tool/.test(HTML),
+     'the help comment and tooltip say the arguments are the model\'s and need checking');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

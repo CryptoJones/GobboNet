@@ -89,13 +89,80 @@ now judges only the text the current parse added (`contentAtStart`,
 that already holds text behaves like a fresh reply. For a fresh reply both are
 0 and nothing changes.
 
+## Hardened after independent review
+
+Before the PR, the committed branch went to a panel of nine models from
+different vendors, one at a time, each with read-only tools on the checkout
+(two more lanes failed to answer and are reported as such). What they found
+and what changed:
+
+- **Consent is re-checked mid-reply** (three lanes). `activateCard` has no
+  generation guard, so switching characters while a reply ran swapped the
+  registry and the loop would have run the new card's same-named tool without
+  its consent; unticking the box and saving mid-turn kept offering tools.
+  Now `cardToolDefs(card)` is read before every request and before any call
+  runs, and `runCardTool` refuses a call whose card no longer owns the
+  registry. The loop also passes its own thread to the tool, since the chat
+  on screen may be another one.
+- **A `/state` blob with only `toolsEnabled` set survived restore**: the
+  neutraliser counted only `customCodeEnabled`, and the restore re-serialises
+  the blob only when something was counted. Either flag counts now.
+- **A reload between rounds replays onto the finished rounds' text.** The
+  loop keeps it on the message as `toolPrefix` while a later round runs;
+  `finalizeJobIntoThread` starts from it instead of a blank, and the boot
+  sweep notes a loop that died with the page (there is no job between rounds).
+- **A round cut by the token limit runs nothing**: `finish_reason: length`
+  means the arguments may be cut too. (Three lanes had asked for the field to
+  be used or removed.)
+- **Tool results have a per-reply budget** (`TOOL_RESULT_BUDGET`, 24,000
+  characters); past it, the next request goes without `tools`. Three lanes
+  pointed out that appended rounds bypass the context budget. The exact
+  accounting is still a follow-up.
+- **Arguments:** refused over 64 KB, the stored copy cut at 8,000 characters
+  like results, and the help comment, tooltip and shipped example now say the
+  arguments are the model's and must be checked before acting on them. The
+  tooltip also says custom code must be on and that text the model reads can
+  steer when a tool runs.
+- **Timeouts abort the tool's own signal.** Each call gets an
+  `AbortController` that follows Stop and fires on timeout, so a tool that
+  watches `ctx.signal` can stop; one that does not keeps running, and the
+  model is told it timed out.
+- **Smaller:** fragments without an `index` join by id or by "a named
+  fragment starts a call" (llama-server always sends the index, per
+  `tools/server/server-chat.cpp`); the no-jinja match is the engine's own
+  phrase, `requires --jinja` (`tools/server/server-common.cpp`); the test-only
+  `opts.tools` parameter is gone; `_pendingToolCalls` and `_finishReason`
+  joined `RUNTIME_MESSAGE_FIELDS` so they never reach storage; the chunk
+  prefilter no longer parses every text line twice; a synthesised call id is
+  nine alphanumerics, the shape strict Mistral templates accept; the round's
+  reasoning goes back as `reasoning_content` on the appended assistant turn
+  (Harmony and Qwen3 templates read it); the mid-round repaint keeps the
+  reader's scroll position; the resume note says "start the reply again".
+- **Declined, with reasons:** a `docs/TOOLS.md` (card code has no docs page
+  either; the help comment is the API by design); schema validation of
+  arguments (card authors validate; a follow-up); continuing a tool loop after
+  a resume (the tools live in the page); re-sending earlier turns' tool calls.
+- **For the maintainer, out of scope:** llama.cpp's server now defaults
+  `use_jinja` to true (`common/common.h`), and the Go supervisor only ever
+  adds `--jinja`, never `--no-jinja`, so the families the launcher means to
+  run without it may already be running with it on the pinned engine.
+
 ## Honest limits
 
 - **Only works with `--jinja`.** Families the launcher runs without it (Mistral
   Nemo merges, the 2024 GLM-4-9B) get one plain reply and the note.
 - **One model tried.** The live run below used one Qwen3.8 model behind a
   non-llama.cpp OpenAI-compatible server. Which other families call tools
-  well, and how llama-server itself streams the deltas, was not tried.
+  well, and how llama-server itself streams the deltas, was not tried; the
+  delta shape and the refusal wording were read in llama.cpp's source.
+- **Context.** Appended rounds sit outside the context budget; the per-reply
+  result budget bounds them but does not measure tokens. The legacy
+  `fileserver.ps1` path forwards the body unchanged and was not run.
+- **The fifth request** goes without tools, so the model answers in text as
+  it would in any tool-less request; a model that tries to call anyway gets
+  no parsed call and no note.
+- **The tool block** is painted between rounds and stays through the next
+  round's streaming; it is not updated token by token.
 - **Round text.** The text a model emits alongside its calls stays in the reply
   ahead of the next round's text, separated by a blank line.
 - **No resume continuation**, as above.
@@ -142,6 +209,9 @@ both boxes ticked:
   signal, no further request was sent, and the reply reads *(generation
   stopped)*.
 - No page errors.
+- The same run was repeated after the review hardening with the same
+  results: a call, a reply built on it, the block, per-variant calls on
+  reroll, and Stop mid-tool ending the loop with no further request.
 
 Not tried: a model run without `--jinja` (the fallback note is pinned by the
 test only), llama-server's own streamed deltas, and a Windows console.

@@ -723,6 +723,7 @@ function rerollMessage() {
   delete msg.smartCapped;
   delete msg._smartLimitAt;
   delete msg.toolCalls;        // the new variant makes its own calls
+  delete msg.toolPrefix;
   msg.timestamp = Date.now();
 
   saveState();
@@ -786,6 +787,7 @@ async function regenerateFromThread(options = {}) {
     delete assistantMsg._smartLimitAt;
     delete assistantMsg.genMs;
     delete assistantMsg.toolCalls;
+    delete assistantMsg.toolPrefix;
     assistantMsg.timestamp = Date.now();
     // Reroll re-authors the turn: the new text comes from whatever card is
     // active now, so the stamp moves with it rather than keeping the old one.
@@ -921,8 +923,12 @@ async function finalizeJobIntoThread(thread, jobId, { live = false } = {}) {
   // strictly supersedes any partial text the 2.5s ticker saved. That
   // includes the smart-limit cut marker: it gates the feeder, and the
   // replay re-derives it (deterministically) from the same byte stream.
-  msg.content = '';
-  msg.reasoning = '';
+  // A reload between tool rounds: the completed rounds' text was kept as
+  // toolPrefix (runGenerationWithTools), and this job's transcript holds only
+  // the round that was running. Replay onto the prefix, not a blank.
+  msg.content = (msg.toolPrefix && msg.toolPrefix.content) || '';
+  msg.reasoning = (msg.toolPrefix && msg.toolPrefix.reasoning) || '';
+  delete msg.toolPrefix;
   delete msg._parseState;
   delete msg._pendingToolCalls;
   delete msg._finishReason;
@@ -961,7 +967,7 @@ async function finalizeJobIntoThread(thread, jobId, { live = false } = {}) {
       name: c.name, args: c.arguments, result: 'not run: the page was left before this call ran',
       error: true, ms: 0
     })));
-    msg.content += '\n\n*(tool call interrupted by leaving the page — reroll to retry)*';
+    msg.content += '\n\n*(tool call interrupted by leaving the page — reroll to start the reply again)*';
   }
   applyGenerationOutcome(msg, outcome, 'plain');
 
@@ -1050,10 +1056,35 @@ let _resumingJobs = false;
 // stream a reply into thread objects that are about to be swapped out.
 let _appBooted = false;
 
+/**
+ * Between tool rounds there is no job at all (runGenerationWithTools), so a
+ * page closed while a tool ran leaves a reply that simply stops. The loop
+ * keeps `toolPrefix` on the message only while it is alive; one still there
+ * with no pending job and nothing generating is a loop that died with the
+ * page. Say so, the way an interrupted resume does, and clear it.
+ */
+function sweepInterruptedToolLoops() {
+  if (isGenerating) return;
+  let touched = false;
+  for (const thread of state.threads || []) {
+    if (thread.pendingJob) continue;
+    for (const msg of thread.messages || []) {
+      if (!msg || !msg.toolPrefix) continue;
+      delete msg.toolPrefix;
+      const note = '\n\n*(tool call interrupted by leaving the page — reroll to start the reply again)*';
+      if (msg.role === 'assistant' && !(msg.content || '').includes(note)) msg.content = (msg.content || '') + note;
+      delete msg.genStartedAt;
+      touched = true;
+    }
+  }
+  if (touched) { saveState(); try { renderSidebar(); } catch (e) {} }
+}
+
 async function resumePendingJobs() {
   if (_resumingJobs) return;
   _resumingJobs = true;
   try {
+    sweepInterruptedToolLoops();
     if (jobsAvailable === false) return;
     const pending = state.threads.filter(t => t.pendingJob && t.pendingJob.id);
     if (pending.length === 0) return;
