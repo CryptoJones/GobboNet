@@ -93,9 +93,9 @@ that already holds text behaves like a fresh reply. For a fresh reply both are
 
 - **Only works with `--jinja`.** Families the launcher runs without it (Mistral
   Nemo merges, the 2024 GLM-4-9B) get one plain reply and the note.
-- **Not tried on real models.** The authoring host has no engine; the manual
-  run below is what the user did or should do. Which families call tools well
-  is the model's business.
+- **One model tried.** The live run below used one Qwen3.8 model behind a
+  non-llama.cpp OpenAI-compatible server. Which other families call tools
+  well, and how llama-server itself streams the deltas, was not tried.
 - **Round text.** The text a model emits alongside its calls stays in the reply
   ahead of the next round's text, separated by a blank line.
 - **No resume continuation**, as above.
@@ -123,11 +123,25 @@ that already holds text behaves like a fresh reply. For a fresh reply both are
 The full suites were run: every `tests/*.mjs` and `tests/*.py`, then
 `stage-web.sh` and `go test ./...`.
 
-## Manual check, Linux
+## Verified live, Linux
 
-Run a model that supports tools (Qwen3.x), paste the `roll_dice` example from
-the code box's help comment into a card, tick both boxes, ask "roll 2d6". The
-collapsed block should appear, the reply should use the result, Stop should end
-the loop, and reroll and variants should keep their own calls. Then a model run
-without `--jinja` (a Mistral-Nemo merge) should give one plain reply with the
-note. Not run in a Windows console.
+`gobbonet serve` in remote mode (`server_exe = ""`, `llm_url` pointing at a
+LAN inference box serving Qwen3.8-Flash-Next through an OpenAI-compatible
+API with streamed `tool_calls`), the page driven headless in Chrome with the
+`roll_dice` example from the code box's help comment on the active card and
+both boxes ticked:
+
+- "Roll 2d6 for me with your dice tool": the model called `roll_dice` with
+  `{"count":2,"sides":6}`, the page ran it, the second request carried the
+  assistant turn and the tool message, and the reply used the result
+  ("Rolled 2d6: 4 + 4 = 8"). The reply shows *🔧 used roll_dice* between the
+  chain-of-thought block and the text; the transport was the detached job.
+- Reroll made a new variant with its own call and result; flipping back
+  restored the first variant's call and block.
+- Stop pressed while a deliberately slow tool ran: the tool got the abort
+  signal, no further request was sent, and the reply reads *(generation
+  stopped)*.
+- No page errors.
+
+Not tried: a model run without `--jinja` (the fallback note is pinned by the
+test only), llama-server's own streamed deltas, and a Windows console.
