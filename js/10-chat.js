@@ -179,8 +179,9 @@ async function sendMessage(overrideContent) {
   // Transport + token parsing live in runGenerationStream: a detached
   // server-side job when the fileserver supports it (the reply survives
   // navigating away — see the DETACHED GENERATION JOBS block), else the
-  // legacy in-page stream.
-  const outcome = await runGenerationStream(thread, assistantMsg, requestBody);
+  // legacy in-page stream. runGenerationWithTools wraps it to run the
+  // card's tools as the model calls them; with none it is the same one call.
+  const outcome = await runGenerationWithTools(thread, assistantMsg, requestBody, { card });
   // A smart-limit cut arrives as an abort (we cancel the stream ourselves),
   // but it's a *successful* turn — don't let it halt an auto-continue chain.
   sendErrored = outcome.errored || (outcome.aborted && !assistantMsg.smartCapped);
@@ -565,6 +566,7 @@ function syncActiveVariant(msg) {
   v.attachments    = msg.attachments;
   v.genMs          = msg.genMs;        // response-timer readout, per variant
   v.smartCapped    = msg.smartCapped;  // smart-limit ✂ marker, per variant
+  v.toolCalls      = msg.toolCalls;    // card-tool calls this variant made
   v.timestamp  = msg.timestamp || v.timestamp || Date.now();
 }
 
@@ -607,6 +609,11 @@ function applyVariantToMessage(msg) {
     msg.smartCapped = v.smartCapped;
   } else {
     delete msg.smartCapped;
+  }
+  if (Array.isArray(v.toolCalls) && v.toolCalls.length) {
+    msg.toolCalls = v.toolCalls;
+  } else {
+    delete msg.toolCalls;
   }
   if (v.timestamp) msg.timestamp = v.timestamp;
 }
@@ -682,6 +689,7 @@ function rerollMessage() {
       searchData: msg.searchData,
       genMs:      msg.genMs,
       smartCapped: msg.smartCapped,
+      toolCalls:  msg.toolCalls,
       timestamp:  msg.timestamp  || Date.now()
     }];
     msg.activeVariant = 0;
@@ -714,6 +722,7 @@ function rerollMessage() {
   delete msg.genMs;
   delete msg.smartCapped;
   delete msg._smartLimitAt;
+  delete msg.toolCalls;        // the new variant makes its own calls
   msg.timestamp = Date.now();
 
   saveState();
@@ -776,6 +785,7 @@ async function regenerateFromThread(options = {}) {
     delete assistantMsg.smartCapped;
     delete assistantMsg._smartLimitAt;
     delete assistantMsg.genMs;
+    delete assistantMsg.toolCalls;
     assistantMsg.timestamp = Date.now();
     // Reroll re-authors the turn: the new text comes from whatever card is
     // active now, so the stamp moves with it rather than keeping the old one.
@@ -805,7 +815,7 @@ async function regenerateFromThread(options = {}) {
 
   // Shared transport: detached server-side job when available (survives
   // navigation), legacy direct stream otherwise. See sendMessage.
-  const outcome = await runGenerationStream(thread, assistantMsg, requestBody);
+  const outcome = await runGenerationWithTools(thread, assistantMsg, requestBody, { card });
 
   // Flush parser state and scrub any format-specific stray markers, then
   // stamp the abort/error note so it lands after the scrubbed text.
@@ -914,9 +924,14 @@ async function finalizeJobIntoThread(thread, jobId, { live = false } = {}) {
   msg.content = '';
   msg.reasoning = '';
   delete msg._parseState;
+  delete msg._pendingToolCalls;
+  delete msg._finishReason;
   delete msg.smartCapped;
   delete msg._smartLimitAt;
   delete msg.genMs;
+  // msg.toolCalls is kept: calls from rounds before the pending one were
+  // recorded and saved as they ran, and this replay covers only the last
+  // round's transcript.
   // Response timer: keep the clock that started before the reload. The
   // message's own persisted stamp is best; the pendingJob breadcrumb is
   // the fallback (both are client wall-clock ms from the original send).
@@ -936,6 +951,18 @@ async function finalizeJobIntoThread(thread, jobId, { live = false } = {}) {
 
   const outcome = await runGenerationStream(thread, msg, null, { resumeJobId: jobId });
   finalizeStreamMessage(msg);
+  // A resumed round that ended in tool calls is not continued (v1): the
+  // tools live in this page's card code, and the loop that would run them
+  // and ask again ended with the page that left. Record what was asked and
+  // say so, so a reroll is one click away.
+  const interrupted = takePendingToolCalls(msg);
+  if (interrupted.length && !outcome.errored && !outcome.aborted) {
+    recordToolCalls(msg, interrupted.map(c => ({
+      name: c.name, args: c.arguments, result: 'not run: the page was left before this call ran',
+      error: true, ms: 0
+    })));
+    msg.content += '\n\n*(tool call interrupted by leaving the page — reroll to retry)*';
+  }
   applyGenerationOutcome(msg, outcome, 'plain');
 
   // Final repaint. Nothing between here and the last streamed token has

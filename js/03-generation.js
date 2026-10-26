@@ -319,6 +319,8 @@ function makeStreamFeeder(assistantMsg, thread) {
       lineBuf = lines.pop() || '';
       for (const line of lines) {
         chunkCount++;
+        // Tool calls ride on the same lines as the text, in their own field.
+        mergeToolCallDeltas(assistantMsg, extractToolCallDeltas(line));
         const result = extractTokenFromLine(line);
         if (result) {
           processStreamDelta(assistantMsg, result.text, result.field);
@@ -357,6 +359,7 @@ function makeStreamFeeder(assistantMsg, thread) {
       const tail = (lineBuf + decoder.decode()).trim();
       lineBuf = '';
       if (tail) {
+        mergeToolCallDeltas(assistantMsg, extractToolCallDeltas(tail));
         const result = extractTokenFromLine(tail);
         if (result) {
           processStreamDelta(assistantMsg, result.text, result.field);
@@ -533,7 +536,11 @@ async function runGenerationStream(thread, assistantMsg, requestBody, opts = {})
       body: JSON.stringify(requestBody),
       signal: abortController ? abortController.signal : undefined
     });
-    if (!resp.ok) throw new Error(`llama-server returned ${resp.status}: ${resp.statusText}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(`llama-server returned ${resp.status}: ${resp.statusText}` +
+                      (detail ? ' — ' + detail.slice(0, 400) : ''));
+    }
     const reader = resp.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -556,6 +563,11 @@ async function runGenerationStream(thread, assistantMsg, requestBody, opts = {})
  * mid-stream failure shouldn't vaporize three paragraphs of good text.
  */
 function applyGenerationOutcome(assistantMsg, outcome, style) {
+  // runGenerationWithTools explains a fallback here (the engine refused the
+  // tools array). Stamped before any abort/error note, after the final text.
+  if (outcome.note) {
+    assistantMsg.content += `\n\n*(${outcome.note})*`;
+  }
   if (outcome.aborted) {
     if (assistantMsg.smartCapped) {
       // Smart token limit trim — expected behavior, not an interruption.
@@ -594,6 +606,159 @@ function applyGenerationOutcome(assistantMsg, outcome, style) {
   } else {
     assistantMsg.content = `**Error:** ${outcome.errorMessage || 'generation failed'}`;
   }
+}
+
+
+/* ================================================================
+   TOOL CALLS -- the loop around runGenerationStream
+
+   A card's code can offer the model functions (gobbo.tool, 23-card-code.js).
+   When the card's tools switch is on, the request carries them as the OpenAI
+   `tools` array and llama-server (run with --jinja) parses the model's calls
+   into `tool_calls` deltas, which makeStreamFeeder collects on the message as
+   _pendingToolCalls. This loop runs the calls in the page, appends the
+   assistant turn and one `tool` message per call to the request, and asks
+   again, up to TOOL_MAX_ROUNDS requests; the last one goes without `tools`
+   so the model has to answer in text.
+
+   The extra messages are appended AFTER buildContextMessages: its
+   normalizer drops `tool` roles and `tool_calls`, and putting them at the
+   end also keeps the cached prompt prefix intact for llama-server.
+
+   Without tool definitions this is exactly one runGenerationStream call.
+================================================================ */
+const TOOL_MAX_ROUNDS = 5;
+
+/** Join streamed tool_calls deltas onto the message, keyed by call index. */
+function mergeToolCallDeltas(msg, delta) {
+  if (!delta) return;
+  if (delta.finishReason) msg._finishReason = delta.finishReason;
+  if (!Array.isArray(delta.toolCalls) || !delta.toolCalls.length) return;
+  const list = msg._pendingToolCalls || (msg._pendingToolCalls = []);
+  for (const d of delta.toolCalls) {
+    let call = list.find(c => c.index === d.index);
+    if (!call) {
+      call = { index: d.index, id: null, name: null, arguments: '' };
+      list.push(call);
+    }
+    if (d.id && !call.id) call.id = d.id;
+    if (d.name && !call.name) call.name = d.name;
+    if (d.arguments) call.arguments += d.arguments;
+  }
+}
+
+/** Remove and return the collected calls as [{ id, name, arguments }]. */
+function takePendingToolCalls(msg) {
+  const list = Array.isArray(msg._pendingToolCalls) ? msg._pendingToolCalls : [];
+  delete msg._pendingToolCalls;
+  delete msg._finishReason;
+  const stamp = Date.now().toString(36);
+  return list.filter(c => c && c.name).map((c, i) => ({
+    id: c.id || ('call_' + stamp + '_' + i),
+    name: c.name,
+    arguments: c.arguments || ''
+  }));
+}
+
+/** llama-server's refusal when the engine runs without --jinja. */
+function isNoJinjaError(message) {
+  const m = String(message || '');
+  return /jinja/i.test(m) && /tool/i.test(m);
+}
+
+/** Stop pressed since the round began (either transport). */
+function toolLoopStopped() {
+  if (abortController && abortController.signal && abortController.signal.aborted) return true;
+  if (currentJob && currentJob.cancelSent) return true;
+  return false;
+}
+
+/** Append tool-call records to the message; they are stored with it. */
+function recordToolCalls(msg, recs) {
+  if (!recs || !recs.length) return;
+  if (!Array.isArray(msg.toolCalls)) msg.toolCalls = [];
+  for (const r of recs) msg.toolCalls.push(r);
+}
+
+/**
+ * Generate one reply, running the active card's tools as the model calls
+ * them. Same signature and result as runGenerationStream, plus `note` when
+ * the engine refused the tools array and the turn was retried without it.
+ *
+ * opts.card  -- the card whose tools apply (default: the active card)
+ * opts.tools -- an explicit tools array (tests); default cardToolDefs(card)
+ */
+async function runGenerationWithTools(thread, assistantMsg, requestBody, opts = {}) {
+  opts = opts || {};
+  const card = opts.card || ((typeof getActiveCard === 'function') ? getActiveCard() : null);
+  const tools = Array.isArray(opts.tools) ? opts.tools : cardToolDefs(card);
+  delete assistantMsg._pendingToolCalls;
+  delete assistantMsg._finishReason;
+
+  if (!tools.length) {
+    const outcome = await runGenerationStream(thread, assistantMsg, requestBody, opts);
+    takePendingToolCalls(assistantMsg);   // nothing to run them with; drop any strays
+    return outcome;
+  }
+
+  const body = Object.assign({}, requestBody, {
+    tools: tools,
+    messages: (requestBody.messages || []).slice()
+  });
+  const signal = abortController ? abortController.signal : undefined;
+  let outcome = null;
+  // Where this round's text begins in the message: earlier rounds' text stays
+  // on screen ahead of it, but only the round's own words are echoed back.
+  let contentFrom = (assistantMsg.content || '').length;
+
+  for (let round = 1; round <= TOOL_MAX_ROUNDS; round++) {
+    if (round === TOOL_MAX_ROUNDS) delete body.tools;   // the last word has to be text
+    outcome = await runGenerationStream(thread, assistantMsg, body, opts);
+    const calls = takePendingToolCalls(assistantMsg);
+
+    if (round === 1 && outcome.errored && isNoJinjaError(outcome.errorMessage)) {
+      console.warn('[card-tool] the engine refused the tools array (no --jinja); retrying without tools');
+      delete body.tools;
+      outcome = await runGenerationStream(thread, assistantMsg, body, opts);
+      takePendingToolCalls(assistantMsg);
+      return Object.assign({}, outcome, { note: "this model can't use tools: the engine runs it without --jinja" });
+    }
+    if (round === TOOL_MAX_ROUNDS) return outcome;   // no tools were offered; strays are dropped
+    if (!calls.length || outcome.errored || outcome.aborted || assistantMsg.smartCapped) return outcome;
+    if (toolLoopStopped()) return Object.assign({}, outcome, { aborted: true });
+
+    // Settle this round's parser state, so the text that came with the calls
+    // is final before it is echoed back and the next round parses cleanly.
+    finalizeStreamMessage(assistantMsg);
+    const fullText = assistantMsg.content || '';
+    const roundText = fullText.slice(Math.min(contentFrom, fullText.length)).trim();
+
+    const recs = [];
+    for (const c of calls) {
+      recs.push(await runCardTool(c.name, c.arguments, { signal: signal }));
+    }
+    recordToolCalls(assistantMsg, recs);
+    if (toolLoopStopped()) return Object.assign({}, outcome, { aborted: true });
+
+    body.messages.push({
+      role: 'assistant',
+      content: roundText,
+      tool_calls: calls.map(c => ({ id: c.id, type: 'function',
+                                    function: { name: c.name, arguments: c.arguments } }))
+    });
+    calls.forEach((c, i) => {
+      body.messages.push({ role: 'tool', tool_call_id: c.id, content: recs[i].result });
+    });
+
+    // The round's text stays on screen; the next round's continues below it.
+    if (fullText) assistantMsg.content = fullText + '\n\n';
+    if (assistantMsg.reasoning) assistantMsg.reasoning = assistantMsg.reasoning + '\n\n';
+    contentFrom = (assistantMsg.content || '').length;
+    console.log('[card-tool] round ' + round + ': ran ' + calls.length + ' call(s), asking again');
+    try { saveState({ skipServerSchedule: true, thread: thread }); } catch (e) {}
+    try { if (thread && state && thread.id === state.activeThreadId) renderMessages(); } catch (e) {}
+  }
+  return outcome;
 }
 
 /* ================================================================
@@ -688,7 +853,13 @@ function processStreamDelta(msg, deltaText, field) {
       // 'content'   — buffering into msg.content
       // 'between'   — harmony only: between channels
       phase: (fmt === 'deepseek' || fmt === 'harmony' || fmt === 'gemma') ? 'pre' : 'content',
-      pending: ''
+      pending: '',
+      // Where this parse began. Both are 0 for a fresh reply; a later tool
+      // round (runGenerationWithTools) parses onto a message that already
+      // holds the earlier rounds' text, and finalizeStreamMessage's
+      // implicit-think give-up must judge only what this round added.
+      contentAtStart: (msg.content || '').length,
+      reasoningAtStart: (msg.reasoning || '').length
     };
   }
   const state = msg._parseState;
@@ -968,10 +1139,12 @@ function processGemmaStream(msg, state) {
 
        {"name": "print", "parameters": {"s": "Hello, friend!"}}
 
-   We never send a `tools` array on our requests, so llama-server has
-   no tool schema to bind this to; it leaves the JSON verbatim in
-   `content`, and it renders in the chat box as raw JSON. This unwraps
-   that envelope back to the human-facing text ("Hello, friend!").
+   A request carries a `tools` array only when the active card offers
+   tools (runGenerationWithTools); otherwise llama-server has no tool
+   schema to bind this to, leaves the JSON verbatim in `content`, and it
+   renders in the chat box as raw JSON. This unwraps that envelope back
+   to the human-facing text ("Hello, friend!"). It is separate from real
+   tool calls, which arrive parsed in `tool_calls` and never in content.
 
    It is deliberately strict: it only fires when the ENTIRE message is
    a single such envelope, so a normal reply that merely happens to
@@ -1086,9 +1259,11 @@ function finalizeStreamMessage(msg) {
     // tokens to reasoning provisionally. If we never saw the close marker
     // AND we never collected anything to content, treat this as a non-thinking
     // model and reparent reasoning -> content.
-    if ((fmt === 'deepseek' || fmt === 'gemma') && state.phase === 'pre' && !msg.content && msg.reasoning) {
-      msg.content = msg.reasoning;
-      msg.reasoning = '';
+    const cAt = state.contentAtStart || 0, rAt = state.reasoningAtStart || 0;
+    if ((fmt === 'deepseek' || fmt === 'gemma') && state.phase === 'pre' &&
+        (msg.content || '').length === cAt && (msg.reasoning || '').length > rAt) {
+      msg.content = (msg.content || '') + msg.reasoning.slice(rAt);
+      msg.reasoning = msg.reasoning.slice(0, rAt);
     }
   }
 
